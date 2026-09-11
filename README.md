@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="assets/logo.png" alt="Mac Gesture Control Logo" width="160" height="160" style="border-radius: 36px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4); margin-bottom: 12px;">
+  <img src="assets/logo.png" alt="Mac Gesture Control Logo" width="160" height="160">
 
   # Mac Gesture Control
 
