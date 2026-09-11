@@ -1,21 +1,23 @@
-# 🖐️ Mac Gesture Control
+<div align="center">
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/satiricalguru/Mac-gesture-control/main/assets/banner.png" alt="Mac Gesture Control Banner" width="100%" onerror="this.style.display='none'"/>
-</p>
+  <img src="assets/logo.png" alt="Mac Gesture Control Logo" width="160" height="160" style="border-radius: 36px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4); margin-bottom: 12px;">
 
-<p align="center">
-  <strong>Ultra-responsive, privacy-first touchless pointer, click, drag, and scroll control for macOS using on-device computer vision.</strong>
-</p>
+  # Mac Gesture Control
 
-<p align="center">
-  <a href="https://github.com/satiricalguru/Mac-gesture-control/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python Versions"></a>
-  <a href="https://www.apple.com/macos/"><img src="https://img.shields.io/badge/platform-macOS%2011%2B%20(Apple%20Silicon%20%26%20Intel)-black.svg" alt="Platform"></a>
-  <a href="https://developers.google.com/mediapipe"><img src="https://img.shields.io/badge/vision-MediaPipe%200.10.35-teal.svg" alt="MediaPipe"></a>
-  <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/built%20with-uv-purple.svg" alt="Built with uv"></a>
-  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
-</p>
+  <p>
+    <strong>Touchless pointer, click, drag, and scroll control for macOS using on-device computer vision.</strong>
+  </p>
+
+  <p>
+    <a href="https://github.com/satiricalguru/Mac-gesture-control/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+    <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python Versions"></a>
+    <a href="https://www.apple.com/macos/"><img src="https://img.shields.io/badge/platform-macOS%2011%2B%20(Apple%20Silicon%20%26%20Intel)-black.svg" alt="Platform"></a>
+    <a href="https://developers.google.com/mediapipe"><img src="https://img.shields.io/badge/vision-MediaPipe%200.10.35-teal.svg" alt="MediaPipe"></a>
+    <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/built%20with-uv-purple.svg" alt="Built with uv"></a>
+    <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
+  </p>
+
+</div>
 
 ---
 
