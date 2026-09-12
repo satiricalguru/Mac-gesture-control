@@ -138,20 +138,38 @@ def ensure_model(path: Path | None = None) -> Path:
     return path
 
 
-def _list_mac_cameras() -> list[tuple[int, str, bool]]:
-    cameras: list[tuple[int, str, bool]] = []
+def _load_avfoundation_classes() -> tuple[Any, Any] | None:
     try:
         import objc
         from Foundation import NSBundle
 
         NSBundle.bundleWithPath_("/System/Library/Frameworks/AVFoundation.framework")
-        objc.loadBundle(
-            "AVFoundation",
-            globals(),
-            bundle_path="/System/Library/Frameworks/AVFoundation.framework",
-        )
+        load_bundle = getattr(objc, "loadBundle", None)
+        lookup_class = getattr(objc, "lookUpClass", None)
+        if callable(load_bundle):
+            load_bundle(
+                "AVFoundation",
+                globals(),
+                bundle_path="/System/Library/Frameworks/AVFoundation.framework",
+            )
+        if callable(lookup_class):
+            av_device_cls = lookup_class("AVCaptureDevice")
+            discovery_cls = lookup_class("AVCaptureDeviceDiscoverySession")
+            if av_device_cls is not None:
+                return av_device_cls, discovery_cls
+    except (ImportError, AttributeError, OSError):
+        pass
+    return None
 
-        av_device_cls = objc.lookUpClass("AVCaptureDevice")
+
+def _list_mac_cameras() -> list[tuple[int, str, bool]]:
+    cameras: list[tuple[int, str, bool]] = []
+    classes = _load_avfoundation_classes()
+    if classes is None:
+        return cameras
+
+    av_device_cls, _ = classes
+    try:
         devices = av_device_cls.devicesWithMediaType_("vide")
         for idx, dev in enumerate(devices):
             name = str(dev.localizedName())
@@ -162,7 +180,7 @@ def _list_mac_cameras() -> list[tuple[int, str, bool]]:
                 or bool(getattr(dev, "isContinuityCamera", lambda: False)())
             )
             cameras.append((idx, name, is_continuity))
-    except (ImportError, AttributeError, OSError):
+    except (AttributeError, OSError):
         pass
     return cameras
 
@@ -171,40 +189,38 @@ def _select_mac_camera(requested_index: int | None) -> tuple[int, str]:
     if requested_index is not None:
         return requested_index, f"camera index {requested_index}"
 
-    try:
-        import objc
-        from Foundation import NSBundle
+    classes = _load_avfoundation_classes()
+    if classes is not None:
+        av_device_cls, discovery_cls = classes
+        try:
+            builtin_devices = ()
+            if discovery_cls is not None:
+                discovery = (
+                    discovery_cls.discoverySessionWithDeviceTypes_mediaType_position_(
+                        ["AVCaptureDeviceTypeBuiltInWideAngleCamera"], "vide", 0
+                    )
+                )
+                builtin_devices = tuple(discovery.devices() if discovery else ())
 
-        NSBundle.bundleWithPath_("/System/Library/Frameworks/AVFoundation.framework")
-        objc.loadBundle(
-            "AVFoundation",
-            globals(),
-            bundle_path="/System/Library/Frameworks/AVFoundation.framework",
-        )
-
-        av_device_cls = objc.lookUpClass("AVCaptureDevice")
-        discovery_cls = objc.lookUpClass("AVCaptureDeviceDiscoverySession")
-
-        discovery = discovery_cls.discoverySessionWithDeviceTypes_mediaType_position_(
-            ["AVCaptureDeviceTypeBuiltInWideAngleCamera"], "vide", 0
-        )
-        builtin_devices = tuple(discovery.devices() if discovery else ())
-
-        devices = av_device_cls.devicesWithMediaType_("vide")
-        for idx, dev in enumerate(devices):
-            name = str(dev.localizedName())
-            dev_type = str(dev.deviceType())
-            is_continuity = (
-                "Continuity" in dev_type
-                or "iPhone" in name
-                or bool(getattr(dev, "isContinuityCamera", lambda: False)())
-            )
-            if is_continuity:
-                continue
-            if dev in builtin_devices or "BuiltIn" in dev_type or "FaceTime" in name:
-                return idx, f"{name} (Mac built-in, device {idx})"
-    except (ImportError, AttributeError, OSError):
-        pass
+            devices = av_device_cls.devicesWithMediaType_("vide")
+            for idx, dev in enumerate(devices):
+                name = str(dev.localizedName())
+                dev_type = str(dev.deviceType())
+                is_continuity = (
+                    "Continuity" in dev_type
+                    or "iPhone" in name
+                    or bool(getattr(dev, "isContinuityCamera", lambda: False)())
+                )
+                if is_continuity:
+                    continue
+                if (
+                    dev in builtin_devices
+                    or "BuiltIn" in dev_type
+                    or "FaceTime" in name
+                ):
+                    return idx, f"{name} (Mac built-in, device {idx})"
+        except (AttributeError, OSError):
+            pass
 
     return 0, "default camera (index 0)"
 
