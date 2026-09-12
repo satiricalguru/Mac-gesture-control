@@ -425,3 +425,111 @@ def test_engine_configuration_cannot_change_mid_gesture():
 
     with pytest.raises(FrozenInstanceError):
         engine.config.scroll_gain = 1.0
+
+
+def test_scroll_latching_prevents_move_on_middle_finger_dip():
+    """While scrolling, slight middle finger curl/flex should stay in SCROLL and not flap to MOVE."""
+    engine = GestureEngine()
+    scroll_hand = _create_hand(index_extended=True, middle_extended=True, center_y=0.5)
+
+    t = 1.0
+    for _ in range(5):
+        engine.update(scroll_hand, t)
+        t += 0.03
+
+    assert engine.stable_gesture == Gesture.SCROLL
+
+    # Slightly curled middle finger (ratio between 0.96 and 1.12)
+    # wrist is center_y + 0.15 = 0.65. mid_pip is center_y - 0.05 = 0.45. dist = 0.20
+    # To get ratio ~1.05: tip distance = 0.21, so mid_tip = 0.65 - 0.21 = 0.44
+    slight_dip_hand = list(scroll_hand)
+    slight_dip_hand[12] = Point(0.5, 0.44)
+
+    out = engine.update(slight_dip_hand, t)
+    assert engine.stable_gesture == Gesture.SCROLL
+    assert all(a.kind != ActionKind.MOVE for a in out.actions)
+
+
+def test_cursor_move_suppressed_during_scroll_transition_and_exit_grace():
+    """Cursor MOVE must be suppressed when transitioning into SCROLL and during post-scroll settling."""
+    engine = GestureEngine()
+    move_hand = _create_hand(index_extended=True, middle_extended=False)
+    scroll_hand = _create_hand(index_extended=True, middle_extended=True)
+
+    t = 1.0
+    for _ in range(5):
+        engine.update(move_hand, t)
+        t += 0.03
+    assert engine.stable_gesture == Gesture.MOVE
+
+    # Start raising middle finger (candidate becomes SCROLL, but not stable yet)
+    out = engine.update(scroll_hand, t)
+    assert all(a.kind != ActionKind.MOVE for a in out.actions), (
+        "MOVE must be suppressed as soon as scroll gesture begins"
+    )
+
+    # Stabilize into SCROLL
+    for _ in range(4):
+        t += 0.03
+        engine.update(scroll_hand, t)
+    assert engine.stable_gesture == Gesture.SCROLL
+
+    # Transition back to MOVE: stabilize into MOVE (takes ~0.08s)
+    for _ in range(4):
+        t += 0.03
+        out1 = engine.update(move_hand, t)
+        assert all(a.kind != ActionKind.MOVE for a in out1.actions)
+
+    assert engine.stable_gesture == Gesture.MOVE
+
+    # Advance beyond the 0.15s settling window: MOVE resumes smoothly
+    t += 0.16
+    out2 = engine.update(move_hand, t)
+    assert any(a.kind == ActionKind.MOVE for a in out2.actions)
+
+
+def test_scroll_smooth_accumulation_across_small_deltas():
+    """Smooth movements smaller than deadzone should accumulate and fire rather than being wiped."""
+    engine = GestureEngine(GestureConfig(scroll_deadzone=0.005))
+    h0 = _create_hand(index_extended=True, middle_extended=True, center_y=0.5)
+
+    t = 1.0
+    for _ in range(5):
+        engine.update(h0, t)
+        t += 0.03
+    assert engine.stable_gesture == Gesture.SCROLL
+
+    # Small displacement 0.002 (< 0.005 deadzone): should NOT fire yet, anchor preserved
+    h1 = _create_hand(index_extended=True, middle_extended=True, center_y=0.502)
+    out1 = engine.update(h1, t)
+    assert all(a.kind != ActionKind.SCROLL for a in out1.actions)
+
+    # Additional displacement 0.004 (total 0.006 > 0.005 deadzone): SHOULD fire
+    t += 0.03
+    h2 = _create_hand(index_extended=True, middle_extended=True, center_y=0.506)
+    out2 = engine.update(h2, t)
+    scrolls = [a for a in out2.actions if a.kind == ActionKind.SCROLL]
+    assert len(scrolls) == 1
+    assert scrolls[0].dy > 0
+
+
+def test_scroll_axis_locking_and_acceleration():
+    """Vertical dominant scroll locks horizontal axis; fast swipe scales with acceleration."""
+    engine = GestureEngine()
+    h0 = _create_hand(index_extended=True, middle_extended=True, center_x=0.5, center_y=0.5)
+
+    t = 1.0
+    for _ in range(5):
+        engine.update(h0, t)
+        t += 0.03
+
+    # Fast swipe vertically with slight horizontal wobble (dy=0.04, dx=0.008)
+    t += 0.03
+    h_fast = _create_hand(index_extended=True, middle_extended=True, center_x=0.508, center_y=0.54)
+    out = engine.update(h_fast, t)
+    scroll = next(a for a in out.actions if a.kind == ActionKind.SCROLL)
+
+    # dx should be locked to 0
+    assert scroll.dx == 0.0
+    # dy should be accelerated: 0.04 * 1450 * accel (> 0.04 * 1450 = 58)
+    assert scroll.dy > 0.04 * 1450.0

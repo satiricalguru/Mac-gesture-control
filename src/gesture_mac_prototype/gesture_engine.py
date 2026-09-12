@@ -255,7 +255,10 @@ class GestureEngine:
         self._pinch_started_s: float | None = None
         self._fist_fired = False
         self._last_fist_toggle_s = -100.0
+        self._scroll_latched = False
         self._scroll_anchor: Point | None = None
+        self._scroll_exit_s: float | None = None
+        self._last_scroll_motion_s: float | None = None
         self._last_update_s: float | None = None
         self._filter_x = _OneEuro(
             self.config.smoothing_min_cutoff, self.config.smoothing_beta
@@ -281,16 +284,25 @@ class GestureEngine:
             self.enabled = enabled
             actions.append(Action(ActionKind.ENABLED_CHANGED, enabled=enabled))
         self._pinch_started_s = None
+        self._scroll_latched = False
         self._scroll_anchor = None
+        self._last_scroll_motion_s = None
         return tuple(actions)
 
     def toggle_enabled(self) -> tuple[Action, ...]:
         return self.set_enabled(not self.enabled)
 
-    def _finger_extended(self, points: Sequence[Point], tip: int, pip: int) -> bool:
+    def _finger_extension_ratio(self, points: Sequence[Point], tip: int, pip: int) -> float:
         wrist = points[0]
-        return _distance(points[tip], wrist) > (
-            _distance(points[pip], wrist) * self.config.finger_extension_ratio
+        pip_dist = _distance(points[pip], wrist)
+        if pip_dist <= 1e-6:
+            return 1.0
+        return _distance(points[tip], wrist) / pip_dist
+
+    def _finger_extended(self, points: Sequence[Point], tip: int, pip: int) -> bool:
+        return (
+            self._finger_extension_ratio(points, tip, pip)
+            > self.config.finger_extension_ratio
         )
 
     def _classify(self, points: Sequence[Point]) -> tuple[Gesture, float]:
@@ -304,21 +316,41 @@ class GestureEngine:
             self._pinch_latched = index_pinch < self.config.pinch_close_ratio
 
         if self._pinch_latched:
+            self._scroll_latched = False
             return Gesture.PINCH, index_pinch
         if middle_pinch < self.config.right_pinch_ratio:
+            self._scroll_latched = False
             return Gesture.RIGHT_PINCH, index_pinch
 
-        index = self._finger_extended(points, 8, 6)
-        middle = self._finger_extended(points, 12, 10)
-        ring = self._finger_extended(points, 16, 14)
-        pinky = self._finger_extended(points, 20, 18)
+        idx_ext = self._finger_extended(points, 8, 6)
+        mid_ext = self._finger_extended(points, 12, 10)
+        ring_ext = self._finger_extended(points, 16, 14)
+        pnk_ext = self._finger_extended(points, 20, 18)
 
-        if not any((index, middle, ring, pinky)):
+        idx_ratio = self._finger_extension_ratio(points, 8, 6)
+        mid_ratio = self._finger_extension_ratio(points, 12, 10)
+        ring_ratio = self._finger_extension_ratio(points, 16, 14)
+
+        if not any((idx_ext, mid_ext, ring_ext, pnk_ext)):
+            self._scroll_latched = False
             return Gesture.FIST, index_pinch
-        if index and middle and not ring and not pinky:
+
+        # Hysteresis latch for SCROLL: once scrolling, stay in SCROLL even if middle
+        # finger tilts or slightly curls during down-strokes.
+        if self._scroll_latched:
+            if idx_ratio > 1.0 and mid_ratio > 0.95 and not pnk_ext:
+                return Gesture.SCROLL, index_pinch
+            self._scroll_latched = False
+
+        # Entering SCROLL: both index and middle extended, pinky folded, and ring not extended
+        # (or noticeably lower than middle to tolerate shared-tendon relaxed floating)
+        if idx_ext and mid_ext and not pnk_ext and (not ring_ext or ring_ratio < mid_ratio * 0.92):
+            self._scroll_latched = True
             return Gesture.SCROLL, index_pinch
-        if index and not middle and not ring and not pinky:
+
+        if idx_ext and not mid_ext and not ring_ext and not pnk_ext:
             return Gesture.MOVE, index_pinch
+
         return Gesture.NEUTRAL, index_pinch
 
     def _pointer(self, point: Point, now_s: float) -> Point:
@@ -419,6 +451,14 @@ class GestureEngine:
                 actions.append(Action(ActionKind.LEFT_CLICK))
             self._pinch_started_s = None
 
+        if previous == Gesture.SCROLL and stable != Gesture.SCROLL:
+            self._scroll_latched = False
+            self._scroll_anchor = None
+            self._last_scroll_motion_s = None
+            self._scroll_exit_s = now_s
+            self._filter_x.reset()
+            self._filter_y.reset()
+
         if stable == Gesture.FIST:
             held_for = now_s - self._stable_since
             cooldown_ok = (
@@ -451,29 +491,54 @@ class GestureEngine:
                     actions.append(Action(ActionKind.LEFT_DOWN))
                     self.dragging = True
             elif stable == Gesture.MOVE:
-                pointer = self._pointer(landmarks[8], now_s)
-                actions.append(Action(ActionKind.MOVE, x=pointer.x, y=pointer.y))
+                in_scroll_transition = self._candidate == Gesture.SCROLL
+                in_scroll_exit_grace = (
+                    self._scroll_exit_s is not None
+                    and (now_s - self._scroll_exit_s < 0.15)
+                )
+                if not (in_scroll_transition or in_scroll_exit_grace):
+                    pointer = self._pointer(landmarks[8], now_s)
+                    actions.append(Action(ActionKind.MOVE, x=pointer.x, y=pointer.y))
             elif stable == Gesture.SCROLL:
                 current = self._scroll_point(landmarks)
                 if self._scroll_anchor is not None:
                     dx = current.x - self._scroll_anchor.x
                     dy = current.y - self._scroll_anchor.y
-                    if abs(dx) < self.config.scroll_deadzone:
-                        dx = 0.0
-                    if abs(dy) < self.config.scroll_deadzone:
-                        dy = 0.0
-                    if dx or dy:
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if dist >= self.config.scroll_deadzone:
+                        # Axis locking: suppress minor sideways wobble when scrolling vertically
+                        if abs(dy) > abs(dx) * 1.5:
+                            dx = 0.0
+                        elif abs(dx) > abs(dy) * 1.5:
+                            dy = 0.0
+
+                        # Speed-adaptive acceleration curve for responsive scrolling
+                        speed = max(abs(dx), abs(dy))
+                        accel = 1.0
+                        if speed > 0.005:
+                            accel = 1.0 + min(3.0, (speed - 0.005) * 80.0)
+
                         direction = -1.0 if self.config.invert_scroll else 1.0
                         actions.append(
                             Action(
                                 ActionKind.SCROLL,
-                                dx=direction * dx * self.config.scroll_gain,
-                                dy=direction * dy * self.config.scroll_gain,
+                                dx=direction * dx * self.config.scroll_gain * accel,
+                                dy=direction * dy * self.config.scroll_gain * accel,
                             )
                         )
-                self._scroll_anchor = current
+                        self._scroll_anchor = current
+                        self._last_scroll_motion_s = now_s
+                    elif (
+                        self._last_scroll_motion_s is not None
+                        and now_s - self._last_scroll_motion_s > 0.25
+                    ):
+                        self._scroll_anchor = current
+                else:
+                    self._scroll_anchor = current
+                    self._last_scroll_motion_s = now_s
             else:
                 self._scroll_anchor = None
+                self._last_scroll_motion_s = None
 
         return EngineOutput(
             raw,
