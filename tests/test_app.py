@@ -322,6 +322,7 @@ def test_open_camera_releases_every_failed_handle(monkeypatch):
         created.append(capture)
         return capture
 
+    monkeypatch.setattr(app, "_list_mac_cameras", lambda: [(0, "FakeCamera", False)])
     monkeypatch.setattr(app, "_select_mac_camera", lambda requested: (7, "test camera"))
     monkeypatch.setattr(app.cv2, "VideoCapture", make_capture)
 

@@ -225,14 +225,46 @@ def _select_mac_camera(requested_index: int | None) -> tuple[int, str]:
     return 0, "default camera (index 0)"
 
 
-def _open_camera(requested_index: int | None = None) -> cv2.VideoCapture:
-    index, desc = _select_mac_camera(requested_index)
+def _open_camera(requested_index: int | None = None) -> Any:
+    """Open a camera, preferring native AVFoundation capture to defeat Continuity Camera.
+
+    When no ``--camera`` index is given and a Continuity Camera (iPhone) is
+    detected, we bypass OpenCV entirely and use a direct ``AVCaptureSession``
+    bound to the Mac's built-in camera by unique-ID.  This prevents macOS
+    from transparently redirecting the video stream to the iPhone.
+
+    Falls back to ``cv2.VideoCapture`` when the user passes ``--camera N``
+    or when the native pipeline is unavailable.
+    """
     cameras = _list_mac_cameras()
     continuity_cameras = [name for _, name, is_cont in cameras if is_cont]
+
+    # -- Native path: bypass OpenCV when Continuity Camera would interfere --
+    if requested_index is None and continuity_cameras:
+        try:
+            from .native_camera import find_builtin_camera_uid, open_native_camera
+
+            uid = find_builtin_camera_uid()
+            if uid is not None:
+                print(
+                    f"[Gesture Mac] ⚠️  Apple Continuity Camera ({continuity_cameras[0]}) detected.\n"
+                    "  Using native AVFoundation capture to lock onto your Mac's built-in webcam.\n"
+                    "  • To stop iPhone waking permanently: iPhone Settings > General > AirPlay & Continuity > turn OFF 'Continuity Camera'."
+                )
+                cap = open_native_camera(uid)
+                print(f"[Gesture Mac] ✅ Locked to: {cap.device_name} (native capture)")
+                return cap
+        except Exception as exc:
+            print(
+                f"[Gesture Mac] Native capture failed ({exc}); falling back to OpenCV.",
+                file=sys.stderr,
+            )
+
+    # -- OpenCV path --
+    index, desc = _select_mac_camera(requested_index)
     if continuity_cameras and requested_index is None:
         print(
             f"[Gesture Mac] ⚠️  Apple Continuity Camera ({continuity_cameras[0]}) detected.\n"
-            "  macOS automatically wakes up nearby iPhones whenever any video app opens.\n"
             "  • To stop iPhone waking permanently: iPhone Settings > General > AirPlay & Continuity > turn OFF 'Continuity Camera'.\n"
             "  • To disconnect now: tap 'Disconnect' on your iPhone screen.\n"
             f"  Binding to: {desc}"
