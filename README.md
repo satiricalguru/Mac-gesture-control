@@ -257,7 +257,7 @@ Posting directly to `kCGHIDEventTap` makes the actions ordinary system mouse inp
 
 The preview reports observed processing FPS, but the repository does not yet contain an instrumented capture-to-event latency benchmark. It therefore makes no unverified latency or CPU claims.
 
-The release targets are p95 processing latency below 50 ms, no queued stale camera frames, at least 95% intended click recognition, and fewer than 0.1 unintended discrete actions per minute. Record real-device results with the validation script in `PLAN.md` before treating the app as a daily driver.
+The release targets are p95 processing latency below 50 ms, no queued stale camera frames, at least 95% intended click recognition, and fewer than 0.1 unintended discrete actions per minute.
 
 ---
 

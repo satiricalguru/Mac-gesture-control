@@ -9,3 +9,5 @@ __pycache__/
 htmlcov/
 dist/
 models/*.task
+NOTES.md
+PLAN.md
