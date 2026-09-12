@@ -294,7 +294,9 @@ class GestureEngine:
     def toggle_enabled(self) -> tuple[Action, ...]:
         return self.set_enabled(not self.enabled)
 
-    def _finger_extension_ratio(self, points: Sequence[Point], tip: int, pip: int) -> float:
+    def _finger_extension_ratio(
+        self, points: Sequence[Point], tip: int, pip: int
+    ) -> float:
         wrist = points[0]
         pip_dist = _distance(points[pip], wrist)
         if pip_dist <= 1e-6:
@@ -359,7 +361,12 @@ class GestureEngine:
 
         # Entering SCROLL: both index and middle extended, pinky folded, and ring not extended
         # (or noticeably lower than middle to tolerate shared-tendon relaxed floating)
-        if idx_ext and mid_ext and not pnk_ext and (not ring_ext or ring_ratio < mid_ratio * 0.92):
+        if (
+            idx_ext
+            and mid_ext
+            and not pnk_ext
+            and (not ring_ext or ring_ratio < mid_ratio * 0.92)
+        ):
             self._scroll_latched = True
             return Gesture.SCROLL, index_pinch
 

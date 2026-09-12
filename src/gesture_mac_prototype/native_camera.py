@@ -35,8 +35,16 @@ _cm_lib = ctypes.cdll.LoadLibrary(
 def _setup_ctypes() -> None:
     """Register argument / return types once."""
     for fn_name, argtypes, restype in (
-        ("CVPixelBufferLockBaseAddress", [ctypes.c_void_p, ctypes.c_uint64], ctypes.c_int32),
-        ("CVPixelBufferUnlockBaseAddress", [ctypes.c_void_p, ctypes.c_uint64], ctypes.c_int32),
+        (
+            "CVPixelBufferLockBaseAddress",
+            [ctypes.c_void_p, ctypes.c_uint64],
+            ctypes.c_int32,
+        ),
+        (
+            "CVPixelBufferUnlockBaseAddress",
+            [ctypes.c_void_p, ctypes.c_uint64],
+            ctypes.c_int32,
+        ),
         ("CVPixelBufferGetBaseAddress", [ctypes.c_void_p], ctypes.c_void_p),
         ("CVPixelBufferGetWidth", [ctypes.c_void_p], ctypes.c_size_t),
         ("CVPixelBufferGetHeight", [ctypes.c_void_p], ctypes.c_size_t),
@@ -169,7 +177,9 @@ class NativeCapture:
     are ignored—preset controls resolution).
     """
 
-    def __init__(self, device_uid: str, preset: str = "AVCaptureSessionPreset640x480") -> None:
+    def __init__(
+        self, device_uid: str, preset: str = "AVCaptureSessionPreset640x480"
+    ) -> None:
         import objc
         from Foundation import NSNumber
 
@@ -185,7 +195,9 @@ class NativeCapture:
 
         device = av_device_cls.deviceWithUniqueID_(device_uid)
         if device is None:
-            raise RuntimeError(f"AVCaptureDevice with uniqueID '{device_uid}' not found")
+            raise RuntimeError(
+                f"AVCaptureDevice with uniqueID '{device_uid}' not found"
+            )
 
         self._device_name: str = str(device.localizedName())
         self._session = session_cls.alloc().init()
@@ -198,9 +210,7 @@ class NativeCapture:
 
         video_output = output_cls.alloc().init()
         video_output.setAlwaysDiscardsLateVideoFrames_(True)
-        video_output.setVideoSettings_(
-            {px_fmt_key: NSNumber.numberWithInt_(_BGRA)}
-        )
+        video_output.setVideoSettings_({px_fmt_key: NSNumber.numberWithInt_(_BGRA)})
 
         GrabberCls = _make_grabber_class()
         self._grabber = GrabberCls.alloc().init()  # type: ignore[attr-defined]
@@ -286,8 +296,10 @@ def find_builtin_camera_uid() -> str | None:
         discovery_cls: Any = lookup("AVCaptureDeviceDiscoverySession")
 
         if discovery_cls is not None:
-            discovery: Any = discovery_cls.discoverySessionWithDeviceTypes_mediaType_position_(
-                ["AVCaptureDeviceTypeBuiltInWideAngleCamera"], "vide", 0
+            discovery: Any = (
+                discovery_cls.discoverySessionWithDeviceTypes_mediaType_position_(
+                    ["AVCaptureDeviceTypeBuiltInWideAngleCamera"], "vide", 0
+                )
             )
             devices = discovery.devices() if discovery else ()
             for dev in devices:

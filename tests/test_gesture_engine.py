@@ -516,7 +516,9 @@ def test_scroll_smooth_accumulation_across_small_deltas():
 def test_scroll_axis_locking_and_acceleration():
     """Vertical dominant scroll locks horizontal axis; fast swipe scales with acceleration."""
     engine = GestureEngine()
-    h0 = _create_hand(index_extended=True, middle_extended=True, center_x=0.5, center_y=0.5)
+    h0 = _create_hand(
+        index_extended=True, middle_extended=True, center_x=0.5, center_y=0.5
+    )
 
     t = 1.0
     for _ in range(5):
@@ -525,7 +527,9 @@ def test_scroll_axis_locking_and_acceleration():
 
     # Fast swipe vertically with slight horizontal wobble (dy=0.04, dx=0.008)
     t += 0.03
-    h_fast = _create_hand(index_extended=True, middle_extended=True, center_x=0.508, center_y=0.54)
+    h_fast = _create_hand(
+        index_extended=True, middle_extended=True, center_x=0.508, center_y=0.54
+    )
     out = engine.update(h_fast, t)
     scroll = next(a for a in out.actions if a.kind == ActionKind.SCROLL)
 
