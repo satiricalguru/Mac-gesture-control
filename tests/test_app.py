@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import ClassVar
 
@@ -329,3 +330,169 @@ def test_open_camera_releases_every_failed_handle(monkeypatch):
 
     assert len(created) == 2
     assert all(capture.released for capture in created)
+
+
+def test_resolve_profile_path_explicit(tmp_path):
+    custom = tmp_path / "custom.json"
+    assert app._resolve_profile_path(custom) == custom.resolve()
+
+
+def test_resolve_profile_path_fallback(monkeypatch, tmp_path):
+    default_p = tmp_path / "default.json"
+    fallback_p = tmp_path / "fallback.json"
+    fallback_p.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(app, "DEFAULT_PROFILE_PATH", default_p)
+    monkeypatch.setattr(app, "FALLBACK_PROFILE_PATH", fallback_p)
+
+    assert app._resolve_profile_path(None) == fallback_p.resolve()
+
+
+def test_load_profile_or_default_no_profile():
+    args = app._parser().parse_args(["--no-profile", "--invert-scroll"])
+    cfg = app._load_profile_or_default(args)
+    assert cfg.invert_scroll is True
+    assert cfg == GestureConfig(invert_scroll=True)
+
+
+def test_load_profile_or_default_loads_existing_profile(tmp_path):
+    custom_profile = tmp_path / "my_profile.json"
+    saved_cfg = GestureConfig(active_left=0.22, pinch_close_ratio=0.31)
+    saved_cfg.save(custom_profile)
+
+    args = app._parser().parse_args(["--profile", str(custom_profile)])
+    loaded_cfg = app._load_profile_or_default(args)
+    assert loaded_cfg.active_left == 0.22
+    assert loaded_cfg.pinch_close_ratio == 0.31
+
+
+def test_load_profile_or_default_handles_corrupt_profile(monkeypatch, tmp_path):
+    profile = tmp_path / "corrupt.json"
+    profile.write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(app, "DEFAULT_PROFILE_PATH", profile)
+    monkeypatch.setattr(app, "FALLBACK_PROFILE_PATH", tmp_path / "none.json")
+
+    args = app._parser().parse_args([])
+    cfg = app._load_profile_or_default(args)
+    assert cfg == GestureConfig()
+
+
+def test_parser_accepts_calibrate_flags():
+    parser = app._parser()
+    args = parser.parse_args(["--calibrate", "--profile", "/tmp/p.json"])
+    assert args.calibrate is True
+    assert args.profile == Path("/tmp/p.json")
+    assert args.no_profile is False
+
+
+def test_draw_calibration_overlay_executes_without_error():
+    frame = np.zeros((540, 960, 3), dtype=np.uint8)
+    engine = app.CalibrationEngine()
+    out = engine.update([Point(0.5, 0.5)] * 21, 1.0)
+
+    app._draw_calibration_overlay(frame, out)
+    assert frame.shape == (540, 960, 3)
+
+
+def test_run_dispatches_to_calibration_when_flag_is_set(monkeypatch, tmp_path):
+    called = []
+
+    monkeypatch.setattr(app.sys, "platform", "darwin")
+    monkeypatch.setattr(app, "ensure_model", lambda p: tmp_path / "model.task")
+    monkeypatch.setattr(
+        app, "_open_camera", lambda cam: SimpleNamespace(release=lambda: None)
+    )
+    monkeypatch.setattr(app.cv2, "destroyAllWindows", lambda: None)
+
+    def fake_cal_loop(args, model_path, engine, capture, profile_path):
+        called.append((model_path, profile_path))
+        return 0
+
+    monkeypatch.setattr(app, "_run_calibration_loop", fake_cal_loop)
+
+    target_profile = tmp_path / "profile.json"
+    args = app._parser().parse_args(["--calibrate", "--profile", str(target_profile)])
+    res = app.run(args)
+    assert res == 0
+    assert len(called) == 1
+    assert called[0][1] == target_profile.resolve()
+
+
+def test_run_calibration_loop_completion(monkeypatch, tmp_path):
+    # Mock landmarker
+    class FakeLandmarker:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def detect_for_video(self, img, ts):
+            return SimpleNamespace(hand_landmarks=[])
+
+    monkeypatch.setattr(
+        app.mp.tasks.vision.HandLandmarker,
+        "create_from_options",
+        lambda opts: FakeLandmarker(),
+    )
+    monkeypatch.setattr(app.cv2, "namedWindow", lambda *args: None)
+    monkeypatch.setattr(app.cv2, "resizeWindow", lambda *args: None)
+    monkeypatch.setattr(app.cv2, "imshow", lambda *args: None)
+    monkeypatch.setattr(app.cv2, "getWindowProperty", lambda *args: 1)
+
+    # Return key 13 (ENTER) to skip to completion quickly
+    keys = [ord(" "), ord(" "), ord(" "), ord(" "), 13]
+
+    def fake_wait_key(delay):
+        return keys.pop(0) if keys else 27
+
+    monkeypatch.setattr(app.cv2, "waitKey", fake_wait_key)
+
+    dummy_frame = np.zeros((540, 960, 3), dtype=np.uint8)
+    fake_cap = SimpleNamespace(read=lambda: (True, dummy_frame))
+
+    engine = app.CalibrationEngine()
+    profile_out = tmp_path / "calibrated_profile.json"
+    args = app._parser().parse_args(["--calibrate"])
+
+    code = app._run_calibration_loop(
+        args, tmp_path / "model.task", engine, fake_cap, profile_out
+    )
+    assert code == 0
+    assert profile_out.exists()
+
+
+def test_run_calibration_loop_cancellation(monkeypatch, tmp_path):
+    class FakeLandmarker:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def detect_for_video(self, img, ts):
+            return SimpleNamespace(hand_landmarks=[])
+
+    monkeypatch.setattr(
+        app.mp.tasks.vision.HandLandmarker,
+        "create_from_options",
+        lambda opts: FakeLandmarker(),
+    )
+    monkeypatch.setattr(app.cv2, "namedWindow", lambda *args: None)
+    monkeypatch.setattr(app.cv2, "resizeWindow", lambda *args: None)
+    monkeypatch.setattr(app.cv2, "imshow", lambda *args: None)
+    monkeypatch.setattr(app.cv2, "getWindowProperty", lambda *args: 1)
+    monkeypatch.setattr(app.cv2, "waitKey", lambda delay: 27)  # ESC
+
+    dummy_frame = np.zeros((540, 960, 3), dtype=np.uint8)
+    fake_cap = SimpleNamespace(read=lambda: (True, dummy_frame))
+
+    engine = app.CalibrationEngine()
+    profile_out = tmp_path / "cancelled_profile.json"
+    args = app._parser().parse_args(["--calibrate"])
+
+    code = app._run_calibration_loop(
+        args, tmp_path / "model.task", engine, fake_cap, profile_out
+    )
+    assert code == 1
+    assert not profile_out.exists()

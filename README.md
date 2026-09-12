@@ -310,6 +310,22 @@ Once comfortable with the gestures in preview mode, launch with control enabled:
 uv run gesture-mac --control
 ```
 
+### 5. Guided Hand Calibration & Custom Profile
+Calibrate Gesture Mac to your hand scale, resting pinch distance, comfortable workspace reach, and scroll direction:
+
+```bash
+uv run gesture-mac --calibrate
+```
+
+Calibration records:
+1. **Rest Hand**: Measures neutral palm scale across landmark 0 (wrist) to landmark 9 (middle MCP).
+2. **Pinch Closed**: Measures closed click pinch distance.
+3. **Pinch Open**: Measures resting open pinch distance to derive optimal hysteresis thresholds (`close < open`).
+4. **Active Bounds**: Samples your comfortable arm/hand reach across corners to frame your screen active area.
+5. **Scroll Preference**: Allows choosing standard or inverted scrolling (press `SPACE` to toggle).
+
+The resulting profile is saved to `~/.config/gesture-mac/profile.json` (or specified `--profile`), and automatically loaded on future runs.
+
 > [!IMPORTANT]
 > **Accessibility Permission Required**: On first launch with `--control`, macOS will prompt to grant Accessibility permissions to your terminal application (**System Settings → Privacy & Security → Accessibility**). Restart the terminal after granting permission.
 
@@ -318,8 +334,11 @@ uv run gesture-mac --control
 | Argument | Description | Default |
 |---|---|---|
 | `--control` | Posts real macOS mouse, drag, and scroll events | `False` (Safe preview only) |
+| `--calibrate` | Runs 30-second guided hand calibration wizard and saves profile | `False` |
+| `--profile PATH` | Path to custom profile JSON | `~/.config/gesture-mac/profile.json` |
+| `--no-profile` | Ignores saved user profile and uses default parameters | `False` |
 | `--camera INDEX` | Explicit camera device index (auto-prioritizes Mac built-in camera) | `None` (Auto-detect) |
-| `--invert-scroll` | Inverts vertical and horizontal scroll wheel directions | `False` (Natural scroll) |
+| `--invert-scroll` | Inverts vertical and horizontal scroll wheel directions | `False` |
 | `--check` | Verifies runtime and model integrity on a blank test frame | `False` |
 | `--model PATH` | Uses a specific verified Hand Landmarker model | user cache/source model |
 
@@ -327,7 +346,7 @@ uv run gesture-mac --control
 
 ## 🧪 Automated Verification Suite
 
-The repository includes deterministic coverage for gesture transitions, display geometry, native event semantics, model integrity, camera selection, and startup cleanup:
+The repository includes deterministic coverage for gesture transitions, calibration state machine, display geometry, native event semantics, model integrity, camera selection, and startup cleanup:
 
 ```bash
 uv sync --group dev
@@ -337,7 +356,8 @@ uv run mypy src
 ```
 
 ```text
-44 passed
+65 passed
+Required test coverage of 85.0% reached. Total coverage: 90%+
 Total coverage: 89% (85% minimum enforced)
 ```
 

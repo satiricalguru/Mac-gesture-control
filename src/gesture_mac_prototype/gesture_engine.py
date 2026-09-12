@@ -6,10 +6,13 @@ landmarks and returns semantic actions. It never touches the camera or macOS.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from enum import StrEnum
 from math import hypot, isfinite, pi
+from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,93 @@ class GestureConfig:
     invert_scroll: bool = False
     smoothing_min_cutoff: float = 1.25
     smoothing_beta: float = 0.055
+
+    def validate(self) -> None:
+        if not 0.0 <= self.active_left < self.active_right <= 1.0:
+            raise ValueError(
+                "active_left and active_right must define a range in [0, 1]"
+            )
+        if not 0.0 <= self.active_top < self.active_bottom <= 1.0:
+            raise ValueError(
+                "active_top and active_bottom must define a range in [0, 1]"
+            )
+        if not 0.0 < self.pinch_close_ratio < self.pinch_open_ratio:
+            raise ValueError("pinch thresholds must be positive and close < open")
+        if not isfinite(self.right_pinch_ratio) or self.right_pinch_ratio <= 0.0:
+            raise ValueError("right_pinch_ratio must be positive")
+        if (
+            not isfinite(self.finger_extension_ratio)
+            or self.finger_extension_ratio <= 0.0
+        ):
+            raise ValueError("finger_extension_ratio must be positive")
+        for name in (
+            "stable_for_s",
+            "drag_after_s",
+            "fist_toggle_after_s",
+            "fist_toggle_cooldown_s",
+            "hand_lost_after_s",
+            "scroll_deadzone",
+            "scroll_gain",
+            "smoothing_beta",
+        ):
+            value = getattr(self, name)
+            if not isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if not isfinite(self.smoothing_min_cutoff) or self.smoothing_min_cutoff <= 0.0:
+            raise ValueError("smoothing_min_cutoff must be finite and positive")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GestureConfig:
+        if not isinstance(data, dict):
+            raise ValueError("config data must be a dictionary")
+        default_inst = cls()
+        field_map = {f.name: f for f in fields(cls)}
+        kwargs: dict[str, Any] = {}
+        for key, value in data.items():
+            if key not in field_map:
+                raise ValueError(f"unknown configuration parameter: {key}")
+            default_val = getattr(default_inst, key)
+            if isinstance(default_val, bool):
+                if not isinstance(value, bool):
+                    raise ValueError(f"{key} must be a boolean")
+                kwargs[key] = value
+            else:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"{key} must be a number")
+                kwargs[key] = float(value)
+        config = cls(**kwargs)
+        config.validate()
+        return config
+
+    def save(self, path: Path) -> None:
+        path = path.expanduser().resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as handle:
+                json.dump(self.to_dict(), handle, indent=2)
+                handle.write("\n")
+            temporary.replace(path)
+        finally:
+            if temporary.exists():
+                temporary.unlink(missing_ok=True)
+
+    @classmethod
+    def load(cls, path: Path) -> GestureConfig:
+        path = path.expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"profile not found: {path}")
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except json.JSONDecodeError as err:
+            raise ValueError(f"malformed profile JSON in {path}: {err}") from err
+        if not isinstance(data, dict):
+            raise ValueError(f"profile in {path} must contain a JSON object")
+        return cls.from_dict(data)
 
 
 def _distance(a: Point, b: Point) -> float:
@@ -176,41 +266,7 @@ class GestureEngine:
 
     @staticmethod
     def _validate_config(config: GestureConfig) -> None:
-        if not 0.0 <= config.active_left < config.active_right <= 1.0:
-            raise ValueError(
-                "active_left and active_right must define a range in [0, 1]"
-            )
-        if not 0.0 <= config.active_top < config.active_bottom <= 1.0:
-            raise ValueError(
-                "active_top and active_bottom must define a range in [0, 1]"
-            )
-        if not 0.0 < config.pinch_close_ratio < config.pinch_open_ratio:
-            raise ValueError("pinch thresholds must be positive and close < open")
-        if not isfinite(config.right_pinch_ratio) or config.right_pinch_ratio <= 0.0:
-            raise ValueError("right_pinch_ratio must be positive")
-        if (
-            not isfinite(config.finger_extension_ratio)
-            or config.finger_extension_ratio <= 0.0
-        ):
-            raise ValueError("finger_extension_ratio must be positive")
-        for name in (
-            "stable_for_s",
-            "drag_after_s",
-            "fist_toggle_after_s",
-            "fist_toggle_cooldown_s",
-            "hand_lost_after_s",
-            "scroll_deadzone",
-            "scroll_gain",
-            "smoothing_beta",
-        ):
-            value = getattr(config, name)
-            if not isfinite(value) or value < 0.0:
-                raise ValueError(f"{name} must be finite and non-negative")
-        if (
-            not isfinite(config.smoothing_min_cutoff)
-            or config.smoothing_min_cutoff <= 0.0
-        ):
-            raise ValueError("smoothing_min_cutoff must be finite and positive")
+        config.validate()
 
     @property
     def stable_gesture(self) -> Gesture:

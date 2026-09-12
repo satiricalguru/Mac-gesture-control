@@ -74,7 +74,7 @@ Exit criteria: 10 minutes of mixed Chrome/Finder use with no stuck mouse button,
 
 ### Phase 1 — measure and calibrate
 
-- Add a 30-second onboarding flow that learns neutral hand scale, pinch-open/closed distances, dominant hand, comfortable active area, and scroll direction.
+- [x] Add a 30-second onboarding flow that learns neutral hand scale, pinch-open/closed distances, comfortable active area, and scroll direction (`calibration.py`, `gesture-mac --calibrate`, JSON profile persistence).
 - Record only anonymous counters/timings in memory: frame latency, classification changes, missed/extra actions. Offer an explicit export; never save camera frames.
 - Move capture and inference off the UI thread; switch to MediaPipe live-stream/latest-frame semantics if profiling shows blocking.
 - Add per-display calibration and an optional single-display selector.

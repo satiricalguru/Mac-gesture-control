@@ -17,8 +17,18 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from .calibration import CalibrationEngine, CalibrationOutput, CalibrationStep
 from .controller import MacOSController, PreviewController
 from .gesture_engine import GestureConfig, GestureEngine, Point
+
+DEFAULT_PROFILE_PATH = Path.home() / ".config" / "gesture-mac" / "profile.json"
+FALLBACK_PROFILE_PATH = (
+    Path.home()
+    / "Library"
+    / "Application Support"
+    / "MacGestureControl"
+    / "profile.json"
+)
 
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
@@ -265,6 +275,191 @@ def _draw_overlay(
     )
 
 
+def _resolve_profile_path(explicit_path: Path | None = None) -> Path:
+    if explicit_path is not None:
+        return explicit_path.expanduser().resolve()
+    if FALLBACK_PROFILE_PATH.exists() and not DEFAULT_PROFILE_PATH.exists():
+        return FALLBACK_PROFILE_PATH.resolve()
+    return DEFAULT_PROFILE_PATH.resolve()
+
+
+def _load_profile_or_default(args: argparse.Namespace) -> GestureConfig:
+    if args.no_profile:
+        return GestureConfig(invert_scroll=args.invert_scroll)
+
+    path = _resolve_profile_path(args.profile)
+    if args.profile is not None:
+        config = GestureConfig.load(path)
+        print(f"[Gesture Mac] Loaded custom profile: {path}")
+    elif path.exists():
+        try:
+            config = GestureConfig.load(path)
+            print(f"[Gesture Mac] Loaded user profile: {path}")
+        except (ValueError, OSError) as err:
+            print(
+                f"[Gesture Mac] Warning: could not load profile {path} ({err}); using defaults",
+                file=sys.stderr,
+            )
+            config = GestureConfig()
+    else:
+        config = GestureConfig()
+
+    if args.invert_scroll:
+        config = GestureConfig.from_dict({**config.to_dict(), "invert_scroll": True})
+
+    return config
+
+
+def _draw_calibration_overlay(frame: Any, output: CalibrationOutput) -> None:
+    height, width = frame.shape[:2]
+
+    # Header banner
+    cv2.rectangle(frame, (0, 0), (width, 106), (24, 27, 32), -1)
+
+    title = (
+        f"CALIBRATION  |  Step {output.step_index}/{output.total_steps}: "
+        f"{output.step.value.replace('_', ' ').title()}"
+    )
+    cv2.putText(
+        frame,
+        title,
+        (22, 32),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.66,
+        (112, 224, 190),
+        2,
+        cv2.LINE_AA,
+    )
+
+    # Instruction
+    cv2.putText(
+        frame,
+        output.instruction,
+        (22, 65),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.54,
+        (244, 246, 248),
+        1,
+        cv2.LINE_AA,
+    )
+
+    # Progress bar
+    bar_width = width - 44
+    fill_width = int(bar_width * max(0.0, min(1.0, output.progress)))
+    cv2.rectangle(frame, (22, 78), (22 + bar_width, 88), (45, 50, 58), -1)
+    if fill_width > 0:
+        cv2.rectangle(frame, (22, 78), (22 + fill_width, 88), (112, 224, 190), -1)
+
+    # Metric text
+    if output.live_metric is not None and output.metric_label:
+        metric_text = f"{output.metric_label}: {output.live_metric:.2f}"
+        cv2.putText(
+            frame,
+            metric_text,
+            (width - 240, 98),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (255, 215, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+    # Footer
+    footer = "SPACE toggle invert / advance     ENTER / Q save & finish     ESC cancel"
+    cv2.rectangle(frame, (0, height - 36), (width, height), (24, 27, 32), -1)
+    cv2.putText(
+        frame,
+        footer,
+        (22, height - 12),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.48,
+        (220, 224, 230),
+        1,
+        cv2.LINE_AA,
+    )
+
+
+def _run_calibration_loop(
+    args: argparse.Namespace,
+    model_path: Path,
+    engine: CalibrationEngine,
+    capture: cv2.VideoCapture,
+    profile_path: Path,
+) -> int:
+    del args
+    options = _landmarker_options(model_path)
+    window = "Gesture Mac Calibration"
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window, 960, 540)
+    start_s = time.monotonic()
+
+    consecutive_drop_count = 0
+    with mp.tasks.vision.HandLandmarker.create_from_options(options) as landmarker:
+        while not engine.is_complete and not engine.is_cancelled:
+            ok, frame = capture.read()
+            if not ok:
+                consecutive_drop_count += 1
+                if consecutive_drop_count > 45:
+                    raise RuntimeError(
+                        "camera stopped returning frames after 45 retries"
+                    )
+                time.sleep(0.01)
+                continue
+            consecutive_drop_count = 0
+
+            now_s = time.monotonic()
+            frame = cv2.flip(frame, 1)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            timestamp_ms = int((now_s - start_s) * 1000)
+            result = landmarker.detect_for_video(mp_image, timestamp_ms)
+            points = _landmarks(result)
+            output = engine.update(points, now_s)
+
+            _draw_hand(frame, points)
+            _draw_calibration_overlay(frame, output)
+            cv2.imshow(window, frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:  # ESC
+                engine.cancel()
+                break
+            if key in (13, 10, ord("q")):  # ENTER or Q
+                if engine.step in (
+                    CalibrationStep.SCROLL_PREFERENCE,
+                    CalibrationStep.COMPLETE,
+                ):
+                    engine.skip_step()
+                    break
+                engine.skip_step()
+            elif key == ord(" "):
+                if engine.step == CalibrationStep.SCROLL_PREFERENCE:
+                    engine.toggle_invert_scroll()
+                else:
+                    engine.skip_step()
+
+            if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                break
+
+    if engine.is_cancelled:
+        print("\n[Gesture Mac] Calibration cancelled.")
+        return 1
+
+    calibrated_config = engine._compile_config()
+    calibrated_config.save(profile_path)
+    print(f"\n[Gesture Mac] Calibration complete! Profile saved to: {profile_path}")
+    print(
+        f"  Active area: x=[{calibrated_config.active_left:.2f}, {calibrated_config.active_right:.2f}], "
+        f"y=[{calibrated_config.active_top:.2f}, {calibrated_config.active_bottom:.2f}]"
+    )
+    print(
+        f"  Pinch close / open ratios: {calibrated_config.pinch_close_ratio:.2f} / "
+        f"{calibrated_config.pinch_open_ratio:.2f}"
+    )
+    print(f"  Scroll inverted: {calibrated_config.invert_scroll}")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Preview or run camera-driven macOS hand gestures."
@@ -287,6 +482,22 @@ def _parser() -> argparse.ArgumentParser:
         "--check",
         action="store_true",
         help="verify the model/runtime without opening the camera or controlling input",
+    )
+    parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="run guided onboarding and hand calibration wizard",
+    )
+    parser.add_argument(
+        "--profile",
+        type=Path,
+        default=None,
+        help=f"path to custom profile JSON (default: {DEFAULT_PROFILE_PATH})",
+    )
+    parser.add_argument(
+        "--no-profile",
+        action="store_true",
+        help="ignore saved user profile and use defaults",
     )
     parser.add_argument(
         "--model",
@@ -397,7 +608,19 @@ def run(args: argparse.Namespace) -> int:
         _check_runtime(model_path)
         return 0
 
-    config = GestureConfig(invert_scroll=args.invert_scroll)
+    if args.calibrate:
+        profile_path = _resolve_profile_path(args.profile)
+        cal_engine = CalibrationEngine()
+        capture = _open_camera(args.camera)
+        try:
+            return _run_calibration_loop(
+                args, model_path, cal_engine, capture, profile_path
+            )
+        finally:
+            capture.release()
+            cv2.destroyAllWindows()
+
+    config = _load_profile_or_default(args)
     engine = GestureEngine(config)
     controller = MacOSController() if args.control else PreviewController()
     capture = _open_camera(args.camera)
