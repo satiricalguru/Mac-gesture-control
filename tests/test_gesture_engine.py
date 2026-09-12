@@ -533,3 +533,52 @@ def test_scroll_axis_locking_and_acceleration():
     assert scroll.dx == 0.0
     # dy should be accelerated: 0.04 * 1450 * accel (> 0.04 * 1450 = 58)
     assert scroll.dy > 0.04 * 1450.0
+
+
+def test_casual_pointing_with_thumb_near_folded_fingers_does_not_trigger_right_click():
+    """Pointing with index extended while thumb rests casually near folded fingers must not right-click."""
+    engine = GestureEngine()
+    hand = _create_hand(index_extended=True, middle_extended=False)
+    # Palm size is 0.30. Set thumb tip to be 0.08 from middle tip (ratio ~0.27, which is < old 0.34)
+    # mid_tip is (0.5, 0.55). Place thumb tip at (0.42, 0.55) -> dist = 0.08 / 0.30 = 0.267
+    hand[4] = Point(0.42, 0.55)
+
+    t = 1.0
+    for _ in range(5):
+        out = engine.update(hand, t)
+        t += 0.03
+        assert all(a.kind != ActionKind.RIGHT_CLICK for a in out.actions)
+
+    assert engine.stable_gesture == Gesture.MOVE
+
+
+def test_relaxed_ring_and_pinky_fingers_do_not_stall_cursor():
+    """Slightly relaxed ring or pinky fingers while pointing must not stall cursor into NEUTRAL."""
+    engine = GestureEngine()
+    # Hand with index pointing, but ring finger slightly relaxed (ext ratio ~1.15)
+    hand = _create_hand(index_extended=True, ring_extended=True)
+
+    t = 1.0
+    for _ in range(5):
+        out = engine.update(hand, t)
+        t += 0.03
+
+    assert engine.stable_gesture == Gesture.MOVE
+    assert any(a.kind == ActionKind.MOVE for a in out.actions)
+
+
+def test_right_pinch_maintains_cursor_move_actions():
+    """Intentional right pinch fires right-click while continuing to track pointer position."""
+    engine = GestureEngine()
+    right_pinched = _create_hand(middle_pinched=True)
+
+    all_actions = []
+    t = 1.0
+    for _ in range(5):
+        out = engine.update(right_pinched, t)
+        all_actions.extend(out.actions)
+        t += 0.03
+
+    assert engine.stable_gesture == Gesture.RIGHT_PINCH
+    assert any(a.kind == ActionKind.RIGHT_CLICK for a in all_actions)
+    assert any(a.kind == ActionKind.MOVE for a in all_actions)

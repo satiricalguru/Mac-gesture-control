@@ -256,6 +256,7 @@ class GestureEngine:
         self._fist_fired = False
         self._last_fist_toggle_s = -100.0
         self._scroll_latched = False
+        self._right_pinch_latched = False
         self._scroll_anchor: Point | None = None
         self._scroll_exit_s: float | None = None
         self._last_scroll_motion_s: float | None = None
@@ -285,6 +286,7 @@ class GestureEngine:
             actions.append(Action(ActionKind.ENABLED_CHANGED, enabled=enabled))
         self._pinch_started_s = None
         self._scroll_latched = False
+        self._right_pinch_latched = False
         self._scroll_anchor = None
         self._last_scroll_motion_s = None
         return tuple(actions)
@@ -317,8 +319,21 @@ class GestureEngine:
 
         if self._pinch_latched:
             self._scroll_latched = False
+            self._right_pinch_latched = False
             return Gesture.PINCH, index_pinch
-        if middle_pinch < self.config.right_pinch_ratio:
+
+        # Right pinch (thumb + middle finger) with hysteresis latching.
+        # Requires an intentional close pinch so that resting the thumb casually
+        # on folded fingers during index-pointing does not trigger false right clicks.
+        close_ratio = min(0.24, self.config.right_pinch_ratio * 0.72)
+        open_ratio = min(0.32, self.config.right_pinch_ratio * 0.92)
+
+        if self._right_pinch_latched:
+            self._right_pinch_latched = middle_pinch < open_ratio
+        else:
+            self._right_pinch_latched = middle_pinch < close_ratio
+
+        if self._right_pinch_latched:
             self._scroll_latched = False
             return Gesture.RIGHT_PINCH, index_pinch
 
@@ -348,7 +363,13 @@ class GestureEngine:
             self._scroll_latched = True
             return Gesture.SCROLL, index_pinch
 
-        if idx_ext and not mid_ext and not ring_ext and not pnk_ext:
+        # MOVE: index is extended and middle is folded.
+        # Tolerant of natural ring/pinky relaxation so cursor does not freeze/stall.
+        if (
+            idx_ext
+            and not mid_ext
+            and not (ring_ext and pnk_ext and ring_ratio > idx_ratio * 0.90)
+        ):
             return Gesture.MOVE, index_pinch
 
         return Gesture.NEUTRAL, index_pinch
@@ -415,6 +436,8 @@ class GestureEngine:
             self._pinch_started_s = None
             self._scroll_anchor = None
             self._pinch_latched = False
+            self._scroll_latched = False
+            self._right_pinch_latched = False
             self._filter_x.reset()
             self._filter_y.reset()
             return EngineOutput(
@@ -459,6 +482,10 @@ class GestureEngine:
             self._filter_x.reset()
             self._filter_y.reset()
 
+        if previous != Gesture.MOVE and stable == Gesture.MOVE:
+            self._filter_x.reset()
+            self._filter_y.reset()
+
         if stable == Gesture.FIST:
             held_for = now_s - self._stable_since
             cooldown_ok = (
@@ -476,10 +503,13 @@ class GestureEngine:
             self._fist_fired = False
 
         if self.enabled:
-            if stable == Gesture.RIGHT_PINCH and previous != Gesture.RIGHT_PINCH:
-                actions.append(Action(ActionKind.RIGHT_CLICK))
+            if stable == Gesture.RIGHT_PINCH:
+                if previous != Gesture.RIGHT_PINCH:
+                    actions.append(Action(ActionKind.RIGHT_CLICK))
+                pointer = self._pointer(landmarks[8], now_s)
+                actions.append(Action(ActionKind.MOVE, x=pointer.x, y=pointer.y))
 
-            if stable == Gesture.PINCH:
+            elif stable == Gesture.PINCH:
                 if previous != Gesture.PINCH or self._pinch_started_s is None:
                     self._pinch_started_s = now_s
                 pointer = self._pointer(landmarks[8], now_s)
@@ -491,12 +521,11 @@ class GestureEngine:
                     actions.append(Action(ActionKind.LEFT_DOWN))
                     self.dragging = True
             elif stable == Gesture.MOVE:
-                in_scroll_transition = self._candidate == Gesture.SCROLL
-                in_scroll_exit_grace = (
+                is_scrolling = self._scroll_latched or (
                     self._scroll_exit_s is not None
                     and (now_s - self._scroll_exit_s < 0.15)
                 )
-                if not (in_scroll_transition or in_scroll_exit_grace):
+                if not is_scrolling:
                     pointer = self._pointer(landmarks[8], now_s)
                     actions.append(Action(ActionKind.MOVE, x=pointer.x, y=pointer.y))
             elif stable == Gesture.SCROLL:
