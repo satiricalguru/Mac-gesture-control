@@ -138,6 +138,35 @@ def ensure_model(path: Path | None = None) -> Path:
     return path
 
 
+def _list_mac_cameras() -> list[tuple[int, str, bool]]:
+    cameras: list[tuple[int, str, bool]] = []
+    try:
+        import objc
+        from Foundation import NSBundle
+
+        NSBundle.bundleWithPath_("/System/Library/Frameworks/AVFoundation.framework")
+        objc.loadBundle(
+            "AVFoundation",
+            globals(),
+            bundle_path="/System/Library/Frameworks/AVFoundation.framework",
+        )
+
+        av_device_cls = objc.lookUpClass("AVCaptureDevice")
+        devices = av_device_cls.devicesWithMediaType_("vide")
+        for idx, dev in enumerate(devices):
+            name = str(dev.localizedName())
+            dev_type = str(dev.deviceType())
+            is_continuity = (
+                "Continuity" in dev_type
+                or "iPhone" in name
+                or bool(getattr(dev, "isContinuityCamera", lambda: False)())
+            )
+            cameras.append((idx, name, is_continuity))
+    except (ImportError, AttributeError, OSError):
+        pass
+    return cameras
+
+
 def _select_mac_camera(requested_index: int | None) -> tuple[int, str]:
     if requested_index is not None:
         return requested_index, f"camera index {requested_index}"
@@ -165,7 +194,12 @@ def _select_mac_camera(requested_index: int | None) -> tuple[int, str]:
         for idx, dev in enumerate(devices):
             name = str(dev.localizedName())
             dev_type = str(dev.deviceType())
-            if "Continuity" in dev_type or "iPhone" in name:
+            is_continuity = (
+                "Continuity" in dev_type
+                or "iPhone" in name
+                or bool(getattr(dev, "isContinuityCamera", lambda: False)())
+            )
+            if is_continuity:
                 continue
             if dev in builtin_devices or "BuiltIn" in dev_type or "FaceTime" in name:
                 return idx, f"{name} (Mac built-in, device {idx})"
@@ -176,6 +210,15 @@ def _select_mac_camera(requested_index: int | None) -> tuple[int, str]:
 
 
 def _open_camera(requested_index: int | None = None) -> cv2.VideoCapture:
+    cameras = _list_mac_cameras()
+    continuity_cameras = [name for _, name, is_cont in cameras if is_cont]
+    if continuity_cameras and requested_index is None:
+        print(
+            f"[Gesture Mac] Notice: Apple Continuity Camera ({continuity_cameras[0]}) detected.\n"
+            "  If macOS switches video to your iPhone instead of the built-in webcam, "
+            "tap 'Disconnect' on your iPhone."
+        )
+
     index, desc = _select_mac_camera(requested_index)
     print(f"[Gesture Mac] Using camera: {desc}")
     capture = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
@@ -500,6 +543,11 @@ def _parser() -> argparse.ArgumentParser:
         help="ignore saved user profile and use defaults",
     )
     parser.add_argument(
+        "--list-cameras",
+        action="store_true",
+        help="list all detected camera devices and exit",
+    )
+    parser.add_argument(
         "--model",
         type=Path,
         default=None,
@@ -602,6 +650,17 @@ def _run_capture_loop(
 def run(args: argparse.Namespace) -> int:
     if sys.platform != "darwin":
         raise RuntimeError("Gesture Mac's event backend supports macOS only")
+
+    if args.list_cameras:
+        cameras = _list_mac_cameras()
+        if not cameras:
+            print("No cameras detected.")
+        else:
+            print("Available cameras:")
+            for idx, name, is_cont in cameras:
+                tag = "Continuity Camera (iPhone)" if is_cont else "Built-in / Standard"
+                print(f"  [{idx}] {name} ({tag})")
+        return 0
 
     model_path = ensure_model(args.model)
     if args.check:

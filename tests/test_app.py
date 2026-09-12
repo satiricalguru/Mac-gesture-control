@@ -496,3 +496,58 @@ def test_run_calibration_loop_cancellation(monkeypatch, tmp_path):
     )
     assert code == 1
     assert not profile_out.exists()
+
+
+def test_list_mac_cameras(monkeypatch):
+    class FakeDevice:
+        def __init__(self, name, dev_type):
+            self._name = name
+            self._type = dev_type
+
+        def localizedName(self):
+            return self._name
+
+        def deviceType(self):
+            return self._type
+
+    class FakeDeviceClass:
+        @classmethod
+        def devicesWithMediaType_(cls, media_type):
+            return [
+                FakeDevice(
+                    "FaceTime HD Camera", "AVCaptureDeviceTypeBuiltInWideAngleCamera"
+                ),
+                FakeDevice("My iPhone Camera", "AVCaptureDeviceTypeExternal"),
+            ]
+
+    objc = ModuleType("objc")
+    objc.loadBundle = lambda *args, **kwargs: None
+    objc.lookUpClass = lambda name: (
+        FakeDeviceClass if name == "AVCaptureDevice" else None
+    )
+
+    foundation = ModuleType("Foundation")
+    foundation.NSBundle = SimpleNamespace(bundleWithPath_=lambda path: object())
+    monkeypatch.setitem(sys.modules, "objc", objc)
+    monkeypatch.setitem(sys.modules, "Foundation", foundation)
+
+    cams = app._list_mac_cameras()
+    assert len(cams) == 2
+    assert cams[0] == (0, "FaceTime HD Camera", False)
+    assert cams[1] == (1, "My iPhone Camera", True)
+
+
+def test_run_list_cameras(monkeypatch, capsys):
+    monkeypatch.setattr(app.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        app,
+        "_list_mac_cameras",
+        lambda: [(0, "FaceTime HD Camera", False), (1, "iPhone Camera", True)],
+    )
+
+    args = app._parser().parse_args(["--list-cameras"])
+    code = app.run(args)
+    assert code == 0
+    captured = capsys.readouterr().out
+    assert "FaceTime HD Camera (Built-in / Standard)" in captured
+    assert "iPhone Camera (Continuity Camera (iPhone))" in captured
