@@ -1,6 +1,6 @@
 """I/O-free gesture classification and transition logic.
 
-This is the portable part of the prototype. It accepts normalized 21-point hand
+This is the portable core. It accepts normalized 21-point hand
 landmarks and returns semantic actions. It never touches the camera or macOS.
 """
 
@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
-from math import hypot, pi
+from enum import StrEnum
+from math import hypot, isfinite, pi
 
 
 @dataclass(frozen=True)
@@ -19,7 +19,7 @@ class Point:
     z: float = 0.0
 
 
-class Gesture(str, Enum):
+class Gesture(StrEnum):
     NO_HAND = "no hand"
     NEUTRAL = "neutral"
     MOVE = "move"
@@ -29,7 +29,7 @@ class Gesture(str, Enum):
     FIST = "pause fist"
 
 
-class ActionKind(str, Enum):
+class ActionKind(StrEnum):
     MOVE = "move"
     LEFT_CLICK = "left_click"
     LEFT_DOWN = "left_down"
@@ -59,7 +59,7 @@ class EngineOutput:
     actions: tuple[Action, ...]
 
 
-@dataclass
+@dataclass(frozen=True)
 class GestureConfig:
     active_left: float = 0.14
     active_right: float = 0.86
@@ -153,6 +153,7 @@ class _OneEuro:
 class GestureEngine:
     def __init__(self, config: GestureConfig | None = None) -> None:
         self.config = config or GestureConfig()
+        self._validate_config(self.config)
         self.enabled = True
         self.dragging = False
         self._stable = Gesture.NO_HAND
@@ -165,12 +166,51 @@ class GestureEngine:
         self._fist_fired = False
         self._last_fist_toggle_s = -100.0
         self._scroll_anchor: Point | None = None
+        self._last_update_s: float | None = None
         self._filter_x = _OneEuro(
             self.config.smoothing_min_cutoff, self.config.smoothing_beta
         )
         self._filter_y = _OneEuro(
             self.config.smoothing_min_cutoff, self.config.smoothing_beta
         )
+
+    @staticmethod
+    def _validate_config(config: GestureConfig) -> None:
+        if not 0.0 <= config.active_left < config.active_right <= 1.0:
+            raise ValueError(
+                "active_left and active_right must define a range in [0, 1]"
+            )
+        if not 0.0 <= config.active_top < config.active_bottom <= 1.0:
+            raise ValueError(
+                "active_top and active_bottom must define a range in [0, 1]"
+            )
+        if not 0.0 < config.pinch_close_ratio < config.pinch_open_ratio:
+            raise ValueError("pinch thresholds must be positive and close < open")
+        if not isfinite(config.right_pinch_ratio) or config.right_pinch_ratio <= 0.0:
+            raise ValueError("right_pinch_ratio must be positive")
+        if (
+            not isfinite(config.finger_extension_ratio)
+            or config.finger_extension_ratio <= 0.0
+        ):
+            raise ValueError("finger_extension_ratio must be positive")
+        for name in (
+            "stable_for_s",
+            "drag_after_s",
+            "fist_toggle_after_s",
+            "fist_toggle_cooldown_s",
+            "hand_lost_after_s",
+            "scroll_deadzone",
+            "scroll_gain",
+            "smoothing_beta",
+        ):
+            value = getattr(config, name)
+            if not isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if (
+            not isfinite(config.smoothing_min_cutoff)
+            or config.smoothing_min_cutoff <= 0.0
+        ):
+            raise ValueError("smoothing_min_cutoff must be finite and positive")
 
     @property
     def stable_gesture(self) -> Gesture:
@@ -256,11 +296,20 @@ class GestureEngine:
     def update(self, landmarks: Sequence[Point] | None, now_s: float) -> EngineOutput:
         actions: list[Action] = []
 
+        if not isfinite(now_s):
+            raise ValueError("now_s must be finite")
+        if self._last_update_s is not None and now_s < self._last_update_s:
+            raise ValueError("now_s must increase monotonically")
+        self._last_update_s = now_s
+
         if landmarks is None:
             if (
                 self._last_seen_s is not None
                 and now_s - self._last_seen_s < self.config.hand_lost_after_s
             ):
+                # Preserve the stable pose through a brief detector miss, but do
+                # not accumulate palm travel and emit it as one scroll burst.
+                self._scroll_anchor = None
                 return EngineOutput(
                     Gesture.NO_HAND,
                     self._stable,
@@ -291,6 +340,12 @@ class GestureEngine:
 
         if len(landmarks) != 21:
             raise ValueError(f"expected 21 hand landmarks, got {len(landmarks)}")
+        if any(
+            not isfinite(coordinate)
+            for point in landmarks
+            for coordinate in (point.x, point.y, point.z)
+        ):
+            raise ValueError("hand landmarks must contain only finite coordinates")
 
         self._last_seen_s = now_s
         raw, pinch_ratio = self._classify(landmarks)
@@ -300,7 +355,11 @@ class GestureEngine:
             if self.dragging:
                 actions.append(Action(ActionKind.LEFT_UP))
                 self.dragging = False
-            elif self.enabled and self._pinch_started_s is not None:
+            elif (
+                self.enabled
+                and self._pinch_started_s is not None
+                and stable in (Gesture.MOVE, Gesture.NEUTRAL)
+            ):
                 actions.append(Action(ActionKind.LEFT_CLICK))
             self._pinch_started_s = None
 
@@ -317,7 +376,7 @@ class GestureEngine:
                 actions.extend(self.toggle_enabled())
                 self._fist_fired = True
                 self._last_fist_toggle_s = now_s
-        elif stable != Gesture.FIST:
+        else:
             self._fist_fired = False
 
         if self.enabled:

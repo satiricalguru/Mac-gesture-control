@@ -3,8 +3,18 @@ name = "mac-gesture-control"
 version = "0.1.0"
 description = "Touchless pointer, click, drag, and scroll control for macOS using on-device computer vision"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.11,<3.14"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: MacOS X",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
 dependencies = [
   # 1.0.1 aborts in DrishtiMetalHelper on macOS 26.6 / Apple M2.
   "mediapipe==0.10.35",
@@ -12,8 +22,22 @@ dependencies = [
   "pyobjc-framework-Quartz>=11.1,<13",
 ]
 
+[project.urls]
+Homepage = "https://github.com/satiricalguru/Mac-gesture-control"
+Issues = "https://github.com/satiricalguru/Mac-gesture-control/issues"
+
 [project.scripts]
 gesture-mac = "gesture_mac_prototype.app:main"
+
+[dependency-groups]
+dev = [
+  "bandit>=1.9,<2",
+  "mypy>=1.19,<2",
+  "pip-audit>=2.9,<3",
+  "pytest>=9,<10",
+  "pytest-cov>=7,<8",
+  "ruff>=0.16,<1",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -21,3 +45,31 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gesture_mac_prototype"]
+
+[tool.pytest.ini_options]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["gesture_mac_prototype"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["B", "E4", "E7", "E9", "F", "I", "RUF", "SIM", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+no_site_packages = true
+
+[[tool.mypy.overrides]]
+module = ["cv2", "cv2.*", "mediapipe", "mediapipe.*", "numpy", "numpy.*"]
+follow_imports = "skip"

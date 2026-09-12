@@ -1,14 +1,17 @@
-"""Disposable camera/preview shell for the Gesture Mac prototype."""
+"""Camera, inference, preview, and CLI shell for Gesture Mac."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import cv2
 import mediapipe as mp
@@ -22,6 +25,9 @@ MODEL_URL = (
     "hand_landmarker/float16/1/hand_landmarker.task"
 )
 MODEL_SHA256 = "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1"
+MODEL_PATH_ENV = "GESTURE_MAC_MODEL_PATH"
+MODEL_DOWNLOAD_TIMEOUT_S = 30.0
+MODEL_MAX_BYTES = 32 * 1024 * 1024
 CONNECTIONS = (
     (0, 1),
     (1, 2),
@@ -52,7 +58,22 @@ def _project_root() -> Path:
 
 
 def _model_path() -> Path:
-    return _project_root() / "models" / "hand_landmarker.task"
+    override = os.environ.get(MODEL_PATH_ENV)
+    if override:
+        return Path(override).expanduser()
+
+    # Reuse the checked-out model during development. Installed wheels do not
+    # contain the 7.8 MB asset, so their writable fallback is the user cache.
+    source_model = _project_root() / "models" / "hand_landmarker.task"
+    if source_model.exists():
+        return source_model
+    return (
+        Path.home()
+        / "Library"
+        / "Caches"
+        / "MacGestureControl"
+        / "hand_landmarker-float16-v1.task"
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -63,16 +84,38 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def ensure_model() -> Path:
-    path = _model_path()
+def ensure_model(path: Path | None = None) -> Path:
+    path = path or _model_path()
     if path.exists() and _sha256(path) == MODEL_SHA256:
         return path
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".download")
     print("Downloading the pinned MediaPipe Hand Landmarker model (7.8 MB)…")
+    temporary: Path | None = None
     try:
-        urllib.request.urlretrieve(MODEL_URL, temporary)
+        if urlsplit(MODEL_URL).scheme != "https":
+            raise RuntimeError("refusing to download the model over a non-HTTPS URL")
+        request = urllib.request.Request(
+            MODEL_URL,
+            headers={"User-Agent": "MacGestureControl/0.1"},
+        )
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f"{path.name}.download-",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            downloaded = 0
+            # MODEL_URL is HTTPS-only and the payload has a pinned SHA-256.
+            with urllib.request.urlopen(  # nosec B310
+                request, timeout=MODEL_DOWNLOAD_TIMEOUT_S
+            ) as response:
+                while chunk := response.read(1024 * 1024):
+                    downloaded += len(chunk)
+                    if downloaded > MODEL_MAX_BYTES:
+                        raise RuntimeError("model download exceeded the safety limit")
+                    handle.write(chunk)
+
         actual_hash = _sha256(temporary)
         if actual_hash != MODEL_SHA256:
             raise RuntimeError(
@@ -80,7 +123,8 @@ def ensure_model() -> Path:
             )
         temporary.replace(path)
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return path
 
 
@@ -105,9 +149,7 @@ def _select_mac_camera(requested_index: int | None) -> tuple[int, str]:
         discovery = discovery_cls.discoverySessionWithDeviceTypes_mediaType_position_(
             ["AVCaptureDeviceTypeBuiltInWideAngleCamera"], "vide", 0
         )
-        builtin_devices = discovery.devices() if discovery else []
-        if builtin_devices and hasattr(av_device_cls, "setUserPreferredCamera_"):
-            av_device_cls.setUserPreferredCamera_(builtin_devices[0])
+        builtin_devices = tuple(discovery.devices() if discovery else ())
 
         devices = av_device_cls.devicesWithMediaType_("vide")
         for idx, dev in enumerate(devices):
@@ -115,7 +157,7 @@ def _select_mac_camera(requested_index: int | None) -> tuple[int, str]:
             dev_type = str(dev.deviceType())
             if "Continuity" in dev_type or "iPhone" in name:
                 continue
-            if "BuiltIn" in dev_type or "FaceTime" in name or "Camera" in name:
+            if dev in builtin_devices or "BuiltIn" in dev_type or "FaceTime" in name:
                 return idx, f"{name} (Mac built-in, device {idx})"
     except (ImportError, AttributeError, OSError):
         pass
@@ -135,9 +177,8 @@ def _open_camera(requested_index: int | None = None) -> cv2.VideoCapture:
     capture.set(cv2.CAP_PROP_FPS, 30)
     capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     if not capture.isOpened():
-        raise RuntimeError(
-            f"could not open {desc}; check Privacy & Security > Camera"
-        )
+        capture.release()
+        raise RuntimeError(f"could not open {desc}; check Privacy & Security > Camera")
     return capture
 
 
@@ -247,6 +288,12 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="verify the model/runtime without opening the camera or controlling input",
     )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=None,
+        help=f"use a specific Hand Landmarker model (or set {MODEL_PATH_ENV})",
+    )
     return parser
 
 
@@ -277,11 +324,75 @@ def _check_runtime(model_path: Path) -> None:
     )
 
 
+def _run_capture_loop(
+    args: argparse.Namespace,
+    model_path: Path,
+    engine: GestureEngine,
+    controller: MacOSController | PreviewController,
+    capture: cv2.VideoCapture,
+) -> None:
+    options = _landmarker_options(model_path)
+    window = "Gesture Mac"
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window, 960, 540)
+    last_frame_s = time.monotonic()
+    smooth_fps = 0.0
+    start_s = last_frame_s
+
+    consecutive_drop_count = 0
+    with mp.tasks.vision.HandLandmarker.create_from_options(options) as landmarker:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                consecutive_drop_count += 1
+                if consecutive_drop_count > 45:
+                    raise RuntimeError(
+                        "camera stopped returning frames after 45 retries"
+                    )
+                time.sleep(0.01)
+                continue
+            consecutive_drop_count = 0
+
+            now_s = time.monotonic()
+            frame = cv2.flip(frame, 1)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            timestamp_ms = int((now_s - start_s) * 1000)
+            result = landmarker.detect_for_video(mp_image, timestamp_ms)
+            points = _landmarks(result)
+            output = engine.update(points, now_s)
+
+            for action in output.actions:
+                controller.apply(action)
+
+            dt = max(now_s - last_frame_s, 1e-6)
+            current_fps = 1.0 / dt
+            smooth_fps = (
+                current_fps
+                if smooth_fps == 0.0
+                else (0.9 * smooth_fps + 0.1 * current_fps)
+            )
+            last_frame_s = now_s
+
+            _draw_hand(frame, points)
+            _draw_overlay(frame, output, engine.config, smooth_fps, args.control)
+            cv2.imshow(window, frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                break
+            if key == ord(" "):
+                for action in engine.toggle_enabled():
+                    controller.apply(action)
+            if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                break
+
+
 def run(args: argparse.Namespace) -> int:
     if sys.platform != "darwin":
-        raise RuntimeError("this prototype's event backend supports macOS only")
+        raise RuntimeError("Gesture Mac's event backend supports macOS only")
 
-    model_path = ensure_model()
+    model_path = ensure_model(args.model)
     if args.check:
         _check_runtime(model_path)
         return 0
@@ -290,62 +401,8 @@ def run(args: argparse.Namespace) -> int:
     engine = GestureEngine(config)
     controller = MacOSController() if args.control else PreviewController()
     capture = _open_camera(args.camera)
-
-    options = _landmarker_options(model_path)
-
-    window = "Gesture Mac — PROTOTYPE"
-    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window, 960, 540)
-    last_frame_s = time.monotonic()
-    smooth_fps = 0.0
-    start_s = last_frame_s
-
-    consecutive_drop_count = 0
     try:
-        with mp.tasks.vision.HandLandmarker.create_from_options(options) as landmarker:
-            while True:
-                ok, frame = capture.read()
-                if not ok:
-                    consecutive_drop_count += 1
-                    if consecutive_drop_count > 45:
-                        raise RuntimeError("camera stopped returning frames after 45 retries")
-                    time.sleep(0.01)
-                    continue
-                consecutive_drop_count = 0
-
-                now_s = time.monotonic()
-                frame = cv2.flip(frame, 1)
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                timestamp_ms = int((now_s - start_s) * 1000)
-                result = landmarker.detect_for_video(mp_image, timestamp_ms)
-                points = _landmarks(result)
-                output = engine.update(points, now_s)
-
-                for action in output.actions:
-                    controller.apply(action)
-
-                dt = max(now_s - last_frame_s, 1e-6)
-                current_fps = 1.0 / dt
-                smooth_fps = (
-                    current_fps
-                    if smooth_fps == 0.0
-                    else (0.9 * smooth_fps + 0.1 * current_fps)
-                )
-                last_frame_s = now_s
-
-                _draw_hand(frame, points)
-                _draw_overlay(frame, output, config, smooth_fps, args.control)
-                cv2.imshow(window, frame)
-
-                key = cv2.waitKey(1) & 0xFF
-                if key in (ord("q"), 27):
-                    break
-                if key == ord(" "):
-                    for action in engine.toggle_enabled():
-                        controller.apply(action)
-                if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
-                    break
+        _run_capture_loop(args, model_path, engine, controller, capture)
     finally:
         controller.release_all()
         capture.release()

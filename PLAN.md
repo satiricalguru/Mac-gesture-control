@@ -62,11 +62,13 @@ Implementation note: MediaPipe 1.0.1 was tested first but reproducibly aborted i
 ### Phase 0 — feasibility prototype (implemented now)
 
 - Camera preview with skeleton, active area, current gesture, and FPS.
-- Main-display cursor movement with adaptive One Euro smoothing.
+- Full active-desktop cursor movement with adaptive One Euro smoothing and gap clamping.
 - Pinch click, hold-to-drag, two-finger 2D scroll, right click.
 - Gesture stability, pinch hysteresis, cooldowns, no-hand drag release.
 - Preview-only default, explicit `--control`, fist/keyboard pause, clean shutdown.
 - Camera-free model/runtime compatibility check.
+- Verified, atomic model caching with an offline path override.
+- Deterministic controller/startup coverage and macOS CI quality gates.
 
 Exit criteria: 10 minutes of mixed Chrome/Finder use with no stuck mouse button, median end-to-end response subjectively below 100 ms, at least 95% intended click recognition, and fewer than one unintended discrete action per 10 minutes.
 
@@ -75,7 +77,7 @@ Exit criteria: 10 minutes of mixed Chrome/Finder use with no stuck mouse button,
 - Add a 30-second onboarding flow that learns neutral hand scale, pinch-open/closed distances, dominant hand, comfortable active area, and scroll direction.
 - Record only anonymous counters/timings in memory: frame latency, classification changes, missed/extra actions. Offer an explicit export; never save camera frames.
 - Move capture and inference off the UI thread; switch to MediaPipe live-stream/latest-frame semantics if profiling shows blocking.
-- Add multi-monitor selection and per-display calibration.
+- Add per-display calibration and an optional single-display selector.
 
 Exit criteria: p95 processing latency below 50 ms on target Apple-silicon Macs; pointer target acquisition within 1.5× trackpad time for medium targets; false clicks below 0.1/minute.
 
@@ -108,7 +110,7 @@ Exit criteria: p95 processing latency below 50 ms on target Apple-silicon Macs; 
 | Stuck drag | Release on pinch-up, hand loss, pause, quit, and exception cleanup |
 | Perceived lag | Latest-frame pipeline; never queue frames; profile capture/inference/event timing separately |
 | Permission confusion | Guided Camera + Accessibility onboarding and trust checks |
-| Privacy concern | On-device inference, no recording, no network after model is bundled |
+| Privacy concern | On-device inference, no recording, and one checksum-verified model download unless an offline model is supplied |
 | Gesture exclusion | Per-user calibration and alternative gestures/dwell controls |
 
 ## Immediate validation script

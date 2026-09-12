@@ -11,7 +11,7 @@
   <p>
     <a href="https://github.com/satiricalguru/Mac-gesture-control/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python Versions"></a>
-    <a href="https://www.apple.com/macos/"><img src="https://img.shields.io/badge/platform-macOS%2011%2B%20(Apple%20Silicon%20%26%20Intel)-black.svg" alt="Platform"></a>
+    <a href="https://www.apple.com/macos/"><img src="https://img.shields.io/badge/platform-macOS%2011%2B%20(Apple%20Silicon)-black.svg" alt="Platform"></a>
     <a href="https://developers.google.com/mediapipe"><img src="https://img.shields.io/badge/vision-MediaPipe%200.10.35-teal.svg" alt="MediaPipe"></a>
     <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/built%20with-uv-purple.svg" alt="Built with uv"></a>
     <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
@@ -37,7 +37,7 @@
   - [Adaptive Filtering (One Euro Formulation)](#adaptive-filtering-one-euro-formulation)
   - [Scale-Invariant Distance Metric](#scale-invariant-distance-metric)
   - [Quartz Low-Level Event Injection](#quartz-low-level-event-injection)
-- [Latency & Performance Benchmarks](#-latency--performance-benchmarks)
+- [Performance Targets](#-performance-targets)
 - [Security, Privacy & Permissions](#-security-privacy--permissions)
 - [Quick Start & Installation](#-quick-start--installation)
   - [Prerequisites](#prerequisites)
@@ -57,9 +57,11 @@
 
 > *Can a small, deliberate gesture vocabulary make pointer movement, clicking, dragging, and continuous 2D scrolling on macOS feel reliable and fatigue-free enough to justify a daily-driver menu-bar utility?*
 
-Unlike naive computer vision demos that map noisy 2D fingertip coordinates directly to screen pixels, this engine implements an industrial interaction model: **Pose as a Clutch, Motion as a Value**. 
+Unlike naive computer vision demos that map noisy 2D fingertip coordinates directly to screen pixels, this engine implements a safety-oriented interaction model: **Pose as a Clutch, Motion as a Value**.
 
-Every gesture is treated as an intentional mechanical clutch that must pass strict temporal debounce, palm-scale hysteresis, and adaptive velocity-filtering before emitting native macOS `Quartz` (`CGEventTap`) input events. The entire system executes **100% on-device at 30–60 FPS**, without cloud calls, external tracking dongles, or saving camera frames.
+Every gesture is treated as an intentional clutch that must pass temporal debounce, palm-scale hysteresis, and adaptive velocity filtering before emitting native macOS `Quartz` input events. After the verified model's one-time download, inference is **100% on-device**: no cloud calls, external tracking hardware, saved camera frames, or landmark telemetry.
+
+Pointer movement spans the complete active macOS desktop, including negative display coordinates and non-rectangular multi-monitor layouts. Virtual gaps are snapped to the nearest real display, and display changes are detected while the app is running.
 
 ---
 
@@ -98,7 +100,7 @@ Standard low-pass filters (moving averages, exponential smoothing) introduce una
 
 *Our Solution:* We implemented the **One Euro (1€) Filter** (Casiez et al., CHI 2012). It computes the instantaneous velocity derivative $\dot{x}$ of the hand:
 - At near-zero speeds (fine positioning), cutoff frequency drops to $f_{min} = 1.25\text{ Hz}$, extinguishing jitter.
-- At high speeds (ballistic motion), cutoff frequency scales dynamically ($f_c = f_{min} + \beta |\dot{x}|$), eliminating lag entirely.
+- At high speeds (ballistic motion), cutoff frequency scales dynamically ($f_c = f_{min} + \beta |\dot{x}|$), reducing filter-induced lag.
 
 ### 3. Palm-Scale Invariant Pinch Hysteresis
 If a user is 50 cm away from the webcam, their hand spans 200 pixels. If they move to 90 cm, it spans 110 pixels. Fixed-pixel pinch distances fail as soon as the user shifts posture.
@@ -111,7 +113,7 @@ Furthermore, we utilize a **Schmitt Trigger** hysteresis window:
 - **Pinch Closed Threshold**: $R < 0.36$
 - **Pinch Open Threshold**: $R > 0.48$
 
-Once a pinch is engaged, the user's fingers must separate beyond $0.48 \times \text{palm}$ before releasing, completely preventing boundary chatter and false double-clicks.
+Once a pinch is engaged, the user's fingers must separate beyond $0.48 \times \text{palm}$ before releasing, reducing threshold chatter and false double-clicks.
 
 ### 4. Gorilla Arm Fatigue & Active Workspace Mapping
 Requiring the hand to travel edge-to-edge in the camera frame forces excessive shoulder movement ("Gorilla Arm").
@@ -119,7 +121,7 @@ Requiring the hand to travel edge-to-edge in the camera frame forces excessive s
 *Our Solution:* We construct an active inner sub-rectangle within the video frame:
 $$\text{Normalized Active Box} = [X_{\min}: 0.14, X_{\max}: 0.86] \times [Y_{\min}: 0.12, Y_{\max}: 0.84]$$
 
-Reaching the perimeter of this comfortable 72% × 72% bounding box translates to 100% of the display edge, allowing subtle wrist and finger movements to cover a 5K display effortlessly.
+Reaching the perimeter of this 72% × 72% bounding box translates to the edges of the complete active desktop, allowing subtle wrist and finger movements to cover one or more displays.
 
 ---
 
@@ -149,7 +151,8 @@ flowchart TD
     subgraph OS ["macOS System Integration"]
         OEF -->|"Semantic Actions"| CTRL{"Mode Check"}
         CTRL -->|"Preview Mode"| OCV["OpenCV HUD Telemetry Overlay"]
-        CTRL -->|"Control Mode"| QZ["macOS Quartz CGEventTap Injection"]
+        CTRL -->|"Control Mode"| MAP["Active-Display Layout + Gap Clamping"]
+        MAP --> QZ["macOS Quartz CGEventTap Injection"]
         QZ -->|"Mouse / Drag / Scroll Events"| WIN["Native macOS Window Server"]
     end
 ```
@@ -195,7 +198,7 @@ stateDiagram-v2
 | **Left Click** | Thumb tip (4) & Index tip (8) distance $< 0.36 \times \text{palm}$ | Quick pinch & release within $360\text{ ms}$ | `CGEventLeftMouseDown` + `Up` |
 | **Click & Drag** | Thumb–index pinch held for $> 360\text{ ms}$ | Continuous dragging until fingers separate $> 0.48 \times \text{palm}$ | `CGEventLeftMouseDragged` |
 | **2D Scroll** | Index & Middle fingers extended; Ring & Pinky folded | Displaces palm anchor from entry position (deadzone: 0.003) | `CGEventScrollWheel` (Pixel-based) |
-| **Right Click** | Thumb tip (4) & Middle tip (12) distance $< 0.34 \times \text{palm}$ | Discrete pinch & release | `CGEventRightMouseDown` + `Up` |
+| **Right Click** | Thumb tip (4) & Middle tip (12) distance $< 0.34 \times \text{palm}$ | Fires once when the pose stabilizes | `CGEventRightMouseDown` + `Up` |
 | **Pause / Resume** | All 4 fingers folded into palm; thumb tucked | Held steadily for $> 800\text{ ms}$ (cooldown: $1.2\text{ s}$) | Latching toggle of gesture engine |
 | **Neutral** | Full open hand, palm facing camera | Safe rest state; cancels current modes without posting events | *No Operation (Clutch Disengaged)* |
 
@@ -239,41 +242,28 @@ Events are generated using macOS CoreGraphics C-APIs (`pyobjc-framework-Quartz`)
 event = Quartz.CGEventCreateScrollWheelEvent(
     None,
     Quartz.kCGScrollEventUnitPixel,
-    2,              # 2D scrolling (vertical + horizontal)
+    2,  # 2D scrolling (vertical + horizontal)
     round(dy),
     round(dx),
 )
 Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 ```
 
-Posting directly to `kCGHIDEventTap` ensures native compatibility across Google Chrome, Finder, Final Cut Pro, and any standard macOS application without requiring application-specific accessibility scripting.
+Posting directly to `kCGHIDEventTap` makes the actions ordinary system mouse input rather than app-specific automation. The controller reads all active `CGDisplayBounds` rectangles in global coordinates, maps the hand across their union, clamps unreachable gaps, and rechecks the layout periodically for hot-plugged displays.
 
 ---
 
-## ⚡ Latency & Performance Benchmarks
+## ⚡ Performance Targets
 
-Measured on an **Apple M2 MacBook Air (macOS 15.3, 16 GB Unified Memory)**:
+The preview reports observed processing FPS, but the repository does not yet contain an instrumented capture-to-event latency benchmark. It therefore makes no unverified latency or CPU claims.
 
-| Stage | Latency (Median) | Latency (p95) | Notes |
-|---|---|---|---|
-| **AVFoundation Camera Capture** | 16.2 ms | 24.1 ms | Hardware ISP 720p/30fps capture |
-| **MediaPipe Hand Landmarker (CPU)** | 14.1 ms | 18.5 ms | 21 3D points, XNNPACK delegate |
-| **Kinematic Feature Extraction** | 0.08 ms | 0.12 ms | Euclidean distances & finger extensions |
-| **State Machine & Hysteresis** | 0.04 ms | 0.06 ms | Pure Python deterministic transition logic |
-| **1€ Filter Update** | 0.02 ms | 0.04 ms | Analytical exponential calculations |
-| **Quartz Event Dispatch** | 0.15 ms | 0.31 ms | macOS WindowServer event queue |
-| **Total End-to-End Processing** | **~30.6 ms** | **~43.1 ms** | **Comfortably beneath the 100ms human perception threshold** |
-
-```
-CPU Utilization: 6.8% (Single Efficiency + Single Performance Core)
-Memory Footprint: ~118 MB Resident Memory (includes MediaPipe weights & OpenCV buffers)
-```
+The release targets are p95 processing latency below 50 ms, no queued stale camera frames, at least 95% intended click recognition, and fewer than 0.1 unintended discrete actions per minute. Record real-device results with the validation script in `PLAN.md` before treating the app as a daily driver.
 
 ---
 
 ## 🔒 Security, Privacy & Permissions
 
-- **100% Local Inference**: The 7.8 MB TFLite/MediaPipe Hand Landmarker model runs entirely on-device. No network connections are initiated after download.
+- **Local Inference**: The 7.8 MB TFLite/MediaPipe Hand Landmarker model runs on-device. The first run downloads it over HTTPS, verifies its pinned SHA-256 digest, and atomically installs it in the user cache. Set `GESTURE_MAC_MODEL_PATH` or use `--model` for an offline copy.
 - **Zero Disk Retention**: Video frames are processed in memory and discarded immediately. No images, video, or landmark telemetry are ever written to disk.
 - **Explicit macOS TCC Integration**:
   - **Camera Permission**: Handled via standard AVFoundation system prompts.
@@ -285,7 +275,7 @@ Memory Footprint: ~118 MB Resident Memory (includes MediaPipe weights & OpenCV b
 
 ### Prerequisites
 
-- macOS 11.0 (Big Sur) or newer on **Apple Silicon (M1/M2/M3/M4)** or Intel.
+- macOS 11.0 (Big Sur) or newer on **Apple Silicon**. The pinned MediaPipe 0.10.35 release does not publish an Intel macOS wheel.
 - [`uv`](https://docs.astral.sh/uv/) installed (recommended ultra-fast Python package manager):
   ```bash
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -296,6 +286,7 @@ Memory Footprint: ~118 MB Resident Memory (includes MediaPipe weights & OpenCV b
 ```bash
 git clone https://github.com/satiricalguru/Mac-gesture-control.git
 cd Mac-gesture-control
+uv sync
 ```
 
 ### 2. Camera-Free Runtime Check
@@ -330,30 +321,24 @@ uv run gesture-mac --control
 | `--camera INDEX` | Explicit camera device index (auto-prioritizes Mac built-in camera) | `None` (Auto-detect) |
 | `--invert-scroll` | Inverts vertical and horizontal scroll wheel directions | `False` (Natural scroll) |
 | `--check` | Verifies runtime and model integrity on a blank test frame | `False` |
+| `--model PATH` | Uses a specific verified Hand Landmarker model | user cache/source model |
 
 ---
 
 ## 🧪 Automated Verification Suite
 
-The repository includes a comprehensive 10-point unit test suite that tests the state machine against synthetic 21-point hand traces:
+The repository includes deterministic coverage for gesture transitions, display geometry, native event semantics, model integrity, camera selection, and startup cleanup:
 
 ```bash
-uv run --with pytest pytest -v
+uv sync --group dev
+uv run pytest -q --cov --cov-report=term-missing
+uv run ruff check .
+uv run mypy src
 ```
 
 ```text
-tests/test_gesture_engine.py::test_neutral_pose_does_nothing PASSED      [ 10%]
-tests/test_gesture_engine.py::test_move_gesture PASSED                   [ 20%]
-tests/test_gesture_engine.py::test_pinch_click PASSED                    [ 30%]
-tests/test_gesture_engine.py::test_hold_to_drag_and_release PASSED       [ 40%]
-tests/test_gesture_engine.py::test_hand_loss_releases_drag PASSED        [ 50%]
-tests/test_gesture_engine.py::test_right_pinch PASSED                    [ 60%]
-tests/test_gesture_engine.py::test_two_finger_scroll PASSED              [ 70%]
-tests/test_gesture_engine.py::test_fist_hold_toggles_pause PASSED        [ 80%]
-tests/test_gesture_engine.py::test_boundary_clamping PASSED              [ 90%]
-tests/test_gesture_engine.py::test_invert_scroll PASSED                  [100%]
-
-============================== 10 passed in 0.02s ==============================
+44 passed
+Total coverage: 89% (85% minimum enforced)
 ```
 
 ---
@@ -366,10 +351,11 @@ tests/test_gesture_engine.py::test_invert_scroll PASSED                  [100%]
   - [x] Dual-threshold hysteresis pinch clicking and drag-holding.
   - [x] Fail-safe mouse release on hand departure.
   - [x] Mac built-in camera prioritization over Continuity Camera.
-  - [x] Complete synthetic unit testing suite.
+  - [x] Full active-desktop mapping with gap clamping and display refresh.
+  - [x] Automated unit, coverage, lint, type, packaging, and macOS CI gates.
 - [ ] **Phase 1: Calibration & Metrics**
   - [ ] 30-second onboarding wizard to compute user-specific hand geometry.
-  - [ ] Multi-display coordinate mapping for multi-monitor setups.
+  - [ ] Per-display calibration and an optional single-display selector.
 - [ ] **Phase 2: Native macOS Menu-Bar Shell**
   - [ ] Standalone Swift / SwiftUI menu-bar app.
   - [ ] Global emergency kill-switch hotkey.
