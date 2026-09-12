@@ -113,8 +113,15 @@ def _load_avfoundation() -> tuple[Any, ...]:
 # ---------------------------------------------------------------------------
 
 
+_cached_grabber_class: type | None = None
+
+
 def _make_grabber_class() -> type:
-    """Dynamically define the ObjC delegate class."""
+    """Dynamically define the ObjC delegate class (cached to avoid duplicate registration)."""
+    global _cached_grabber_class
+    if _cached_grabber_class is not None:
+        return _cached_grabber_class
+
     import objc
     from Foundation import NSObject
 
@@ -161,6 +168,7 @@ def _make_grabber_class() -> type:
             signature=b"v@:@@@",
         )
 
+    _cached_grabber_class = _FrameGrabber
     return _FrameGrabber
 
 
