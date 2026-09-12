@@ -226,17 +226,19 @@ def _select_mac_camera(requested_index: int | None) -> tuple[int, str]:
 
 
 def _open_camera(requested_index: int | None = None) -> cv2.VideoCapture:
+    index, desc = _select_mac_camera(requested_index)
     cameras = _list_mac_cameras()
     continuity_cameras = [name for _, name, is_cont in cameras if is_cont]
     if continuity_cameras and requested_index is None:
         print(
-            f"[Gesture Mac] Notice: Apple Continuity Camera ({continuity_cameras[0]}) detected.\n"
-            "  If macOS switches video to your iPhone instead of the built-in webcam, "
-            "tap 'Disconnect' on your iPhone."
+            f"[Gesture Mac] ⚠️  Apple Continuity Camera ({continuity_cameras[0]}) detected.\n"
+            "  macOS automatically wakes up nearby iPhones whenever any video app opens.\n"
+            "  • To stop iPhone waking permanently: iPhone Settings > General > AirPlay & Continuity > turn OFF 'Continuity Camera'.\n"
+            "  • To disconnect now: tap 'Disconnect' on your iPhone screen.\n"
+            f"  Binding to: {desc}"
         )
-
-    index, desc = _select_mac_camera(requested_index)
-    print(f"[Gesture Mac] Using camera: {desc}")
+    else:
+        print(f"[Gesture Mac] Using camera: {desc}")
     capture = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
     if not capture.isOpened():
         capture.release()

@@ -551,3 +551,27 @@ def test_run_list_cameras(monkeypatch, capsys):
     captured = capsys.readouterr().out
     assert "FaceTime HD Camera (Built-in / Standard)" in captured
     assert "iPhone Camera (Continuity Camera (iPhone))" in captured
+
+
+def test_open_camera_prints_continuity_notice(monkeypatch, capsys):
+    class DummyCapture:
+        def isOpened(self):
+            return True
+
+        def set(self, *args):
+            del args
+
+    monkeypatch.setattr(
+        app,
+        "_list_mac_cameras",
+        lambda: [(0, "FaceTime HD Camera", False), (1, "Jatin's iPhone", True)],
+    )
+    monkeypatch.setattr(app, "_select_mac_camera", lambda req: (0, "FaceTime HD Camera"))
+    monkeypatch.setattr(app.cv2, "VideoCapture", lambda *args: DummyCapture())
+
+    app._open_camera()
+    captured = capsys.readouterr().out
+    assert "Apple Continuity Camera" in captured
+    assert "Jatin's iPhone" in captured
+    assert "turn OFF 'Continuity Camera'" in captured
+
