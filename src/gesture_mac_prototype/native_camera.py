@@ -110,9 +110,11 @@ def _make_grabber_class() -> type:
     import objc
     from Foundation import NSObject
 
+    _objc: Any = objc
+
     class _FrameGrabber(NSObject):  # type: ignore[misc]
         def init(self) -> _FrameGrabber:
-            self = objc.super(_FrameGrabber, self).init()
+            self = _objc.super(_FrameGrabber, self).init()
             if self is None:  # pragma: no cover
                 return self
             self._latest: np.ndarray | None = None
@@ -124,7 +126,7 @@ def _make_grabber_class() -> type:
             self, _output: Any, sample_buffer: Any, _connection: Any
         ) -> None:
             try:
-                buf_ptr = objc.pyobjc_id(sample_buffer)
+                buf_ptr = _objc.pyobjc_id(sample_buffer)
                 img_buf = _GetImageBuffer(buf_ptr)
                 if not img_buf:
                     return
@@ -146,7 +148,7 @@ def _make_grabber_class() -> type:
             except Exception:  # delegate must not throw  # nosec B110
                 pass
 
-        captureOutput_didOutputSampleBuffer_fromConnection_ = objc.selector(
+        captureOutput_didOutputSampleBuffer_fromConnection_ = _objc.selector(
             captureOutput_didOutputSampleBuffer_fromConnection_,
             signature=b"v@:@@@",
         )
@@ -170,6 +172,8 @@ class NativeCapture:
     def __init__(self, device_uid: str, preset: str = "AVCaptureSessionPreset640x480") -> None:
         import objc
         from Foundation import NSNumber
+
+        _objc: Any = objc
 
         (
             av_device_cls,
@@ -207,7 +211,7 @@ class NativeCapture:
         _dq_create.argtypes = [ctypes.c_char_p, ctypes.c_void_p]
         _dq_create.restype = ctypes.c_void_p
         queue_ptr = _dq_create(b"gesture_mac_camera", None)
-        queue = objc.objc_object(c_void_p=queue_ptr)
+        queue = _objc.objc_object(c_void_p=queue_ptr)
 
         video_output.setSampleBufferDelegate_queue_(self._grabber, queue)
 
@@ -278,11 +282,11 @@ def find_builtin_camera_uid() -> str | None:
         if not callable(lookup):
             return None
 
-        av_device_cls = lookup("AVCaptureDevice")
-        discovery_cls = lookup("AVCaptureDeviceDiscoverySession")
+        av_device_cls: Any = lookup("AVCaptureDevice")
+        discovery_cls: Any = lookup("AVCaptureDeviceDiscoverySession")
 
         if discovery_cls is not None:
-            discovery = discovery_cls.discoverySessionWithDeviceTypes_mediaType_position_(
+            discovery: Any = discovery_cls.discoverySessionWithDeviceTypes_mediaType_position_(
                 ["AVCaptureDeviceTypeBuiltInWideAngleCamera"], "vide", 0
             )
             devices = discovery.devices() if discovery else ()
